@@ -1,4 +1,4 @@
-"""app-store-publisher：一键发布与查询各大应用商店。"""
+"""app-publish-hub（App 发布中枢）：一键发布与查询各大应用商店。"""
 from __future__ import annotations
 
 __version__ = "0.1.0"

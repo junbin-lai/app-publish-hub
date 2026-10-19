@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>App发布看板</title>
+<title>App发布中枢</title>
 <style>
 :root{color-scheme:light;--bg:#f5f5f7;--panel:#ffffff;--panel2:#f2f2f7;--line:rgba(0,0,0,.08);--hairline:#d2d2d7;--txt:#1d1d1f;--mut:#6e6e73;--acc:#0071e3;--btn-ink:#ffffff;--ok:#157034;--err:#d70015;--warn:#c93400;--hdr-bg:rgba(255,255,255,.72);--aside-bg:rgba(245,245,247,.85);--hov:rgba(0,0,0,.05);--hov2:rgba(0,0,0,.04);--btn2-bg:#ffffff;--btn2-hov:#f8f8fa;--chip-bg:#f2f2f7;--input-bg:#ffffff;--card-border:rgba(0,0,0,.06);--card-shadow:0 8px 24px rgba(0,0,0,.05),0 1px 2px rgba(0,0,0,.04);--console-bg:#f8f8fa;--console-txt:#3a3a3c;--tint-ok:#e8f6ec;--tint-err:#fdeceb;--tint-warn:#fdf0e7;--tint-blue:#e8f1fd;--tint-gray:#f0f4f8;--pending-txt:#0066cc;--draft-txt:#43688c;--ov-bg:rgba(0,0,0,.4);--modal-border:rgba(0,0,0,.06);--modal-shadow:0 20px 60px rgba(0,0,0,.2),0 4px 12px rgba(0,0,0,.08);--sb-thumb:rgba(0,0,0,.18);--sb-thumb-hov:rgba(0,0,0,.28);--sel:rgba(0,113,227,.18);--focus-ring:rgba(0,113,227,.35);--bdg-ok-bd:rgba(21,112,52,.45);--bdg-err-bd:rgba(215,0,21,.35)}
 :root[data-theme="dark"]{color-scheme:dark;--bg:#0f172a;--panel:#1e293b;--panel2:#294061;--line:#3b4a63;--hairline:#3b4a63;--txt:#e2e8f0;--mut:#94a3b8;--acc:#38bdf8;--btn-ink:#0a1628;--ok:#4ade80;--err:#fca5a5;--warn:#fbbf24;--hdr-bg:rgba(20,33,58,.85);--aside-bg:rgba(13,22,38,.85);--hov:#22406b;--hov2:#1d3357;--btn2-bg:#23395e;--btn2-hov:#2c4a75;--chip-bg:#23395e;--input-bg:#0d1626;--card-border:#3b4a63;--card-shadow:0 8px 24px rgba(0,0,0,.35);--console-bg:#0a1322;--console-txt:#e2e8f0;--tint-ok:#14532d;--tint-err:#7f1d1d;--tint-warn:#78350f;--tint-blue:#1e4d6b;--tint-gray:#1e3a5f;--pending-txt:#7dd3fc;--draft-txt:#38bdf8;--ov-bg:rgba(2,6,23,.6);--modal-border:#3b4a63;--modal-shadow:0 20px 60px rgba(0,0,0,.5);--sb-thumb:rgba(148,163,184,.3);--sb-thumb-hov:rgba(148,163,184,.45);--sel:rgba(56,189,248,.25);--focus-ring:rgba(56,189,248,.45);--bdg-ok-bd:#4ade80;--bdg-err-bd:#fca5a5}
@@ -127,7 +127,7 @@ a:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--acc);outline-of
 </head>
 <body>
 <header>
-  <div style="display:flex;align-items:center;gap:var(--space-3)"><h1>App发布看板</h1><span class="muted" id="cfg"></span></div>
+  <div style="display:flex;align-items:center;gap:var(--space-3)"><h1>App发布中枢</h1><span class="muted" id="cfg"></span></div>
   <div class=hdr-right><span class="muted" id="fsInfo"></span><span class="muted" id="meInfo"></span><button class="secondary sm hide" id="userBtn" onclick="showUserModal()">用户管理</button><button class="secondary sm hide" id="logoutBtn" onclick="logout()">退出登录</button><button class="secondary sm" id="themeBtn" onclick="toggleTheme()">深色</button><button class=secondary sm onclick=ld()>刷新</button><button class=secondary sm onclick=validateAll()>校验凭证</button></div>
 </header>
 <div class=layout>
@@ -157,7 +157,7 @@ function api(p,o){return fetch(p,o).then(function(r){if(r.status===401)showLogin
 // ==== 登录/会话（board.json 配置 users 后开启；viewer 只读，admin 可发布） ====
 function showLogin(){if(document.getElementById("loginOverlay"))return;
 var h='<div class="overlay" id="loginOverlay"><div class="modal" style="text-align:center;--modal-min-w:360px">'
-+'<h3 class="section-title" style="margin-bottom:var(--space-3)">App发布看板</h3>'
++'<h3 class="section-title" style="margin-bottom:var(--space-3)">App发布中枢</h3>'
 +'<div style="text-align:left"><label for="lgUser">用户名</label><input id="lgUser" autocomplete="username"></div>'
 +'<div style="text-align:left;margin-top:var(--space-2)"><label for="lgPass">密码</label><input id="lgPass" type="password" autocomplete="current-password"></div>'
 +'<div id="lgErr" style="color:var(--err);font-size:var(--font-caption);min-height:18px;margin-top:var(--space-2)"></div>'
@@ -488,7 +488,7 @@ c.fillStyle="#3a3a3c";c.fillText(fit(o.v,"400 12.5px "+FONT,W-PX-lx),lx,ly);ly+=
 var rh=rowHs[idx];
 if(idx<rows.length-1){c.strokeStyle="rgba(0,0,0,.08)";c.beginPath();c.moveTo(IX,y+rh-5);c.lineTo(W-PX,y+rh-5);c.stroke()}
 y+=rh});
-c.font="400 11px "+FONT;c.fillStyle="#86868b";var ft="— 由 App 发布看板生成 —";c.fillText(ft,(W-c.measureText(ft).width)/2,H-18);
+c.font="400 11px "+FONT;c.fillStyle="#86868b";var ft="— 由 App 发布中枢生成 —";c.fillText(ft,(W-c.measureText(ft).width)/2,H-18);
 function okToast(){toast("图片已复制到剪贴板，可直接粘贴分享")}
 function fb(){try{var u=cv.toDataURL("image/png");var l=document.createElement("a");l.href=u;l.download=(a.name||"app")+"-发布状态.png";l.click();toast("剪贴板不可用，已为您下载图片")}catch(e){toast("生成失败","err")}}
 try{cv.toBlob(function(blob){

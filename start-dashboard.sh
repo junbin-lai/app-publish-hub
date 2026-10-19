@@ -1,5 +1,5 @@
 #!/bin/bash
-# App 分发看板 一键启动脚本
+# App 发布中枢 一键启动脚本
 # 用法：
 #   ./start-dashboard.sh          前台运行（Ctrl+C 停止，仅本机 127.0.0.1）
 #   ./start-dashboard.sh bg       后台运行（关终端不停，日志 tmpdoc/web-8090.log）

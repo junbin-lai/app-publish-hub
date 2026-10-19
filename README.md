@@ -1,7 +1,7 @@
-# App 分发看板（App Distribution Dashboard）
+# App 发布中枢（App Publish Hub）
 
-[![GitHub stars](https://img.shields.io/github/stars/Jimbean-Lai/app-distribution-dashboard?style=social)](https://github.com/Jimbean-Lai/app-distribution-dashboard/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/Jimbean-Lai/app-distribution-dashboard?style=social)](https://github.com/Jimbean-Lai/app-distribution-dashboard/network)
+[![GitHub stars](https://img.shields.io/github/stars/Jimbean-Lai/app-publish-hub?style=social)](https://github.com/Jimbean-Lai/app-publish-hub/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/Jimbean-Lai/app-publish-hub?style=social)](https://github.com/Jimbean-Lai/app-publish-hub/network)
 
 > ⭐ 如果这个项目对你有帮助，可以顺手点个**Star**，非常感谢！🫶
 

@@ -273,7 +273,7 @@ def render_status_image(
         y += row_heights[idx]
 
     # 页脚
-    foot = "— 由 App 发布看板生成 —"
+    foot = "— 由 App 发布中枢生成 —"
     fw = draw.textlength(foot, font=f_foot) / SCALE
     text((W - fw) / 2, height - 18, foot, f_foot, _hex("#86868b"))
 

@@ -256,7 +256,7 @@ def build_publish_card(task: Dict[str, Any], app_name: str, image_key: str = "")
         })
     elements.append({"tag": "hr"})
     elements.append({"tag": "note", "elements": [
-        {"tag": "plain_text", "content": "App 发布看板 · 发布结束自动通知"},
+        {"tag": "plain_text", "content": "App 发布中枢 · 发布结束自动通知"},
     ]})
     return {"config": {"wide_screen_mode": True}, "header": {"template": template, "title": {"tag": "plain_text", "content": title}}, "elements": elements}
 
@@ -293,7 +293,7 @@ def build_help_text(apps: List[Dict[str, Any]], bound: bool, sec_bound: bool = F
     bind_line = "已绑定本群" if bound else "未绑定（@我 发送「绑定通知群」开启发布通知）"
     sec_line = "已绑定本会话" if sec_bound else "未绑定（私聊我 发送「绑定安全告警」，账号变更等安全事件只私聊通知你）"
     return (
-        "我是 App 发布看板机器人 🤖\n"
+        "我是 App 发布中枢机器人 🤖\n"
         "用法：\n"
         "• @我 查询 <应用名> — 查该应用各平台状态，回复状态分享图\n"
         "• @我 查询 全部 — 逐个应用查询（较慢，耐心等）\n"

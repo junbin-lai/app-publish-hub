@@ -1017,7 +1017,7 @@ def _security_alert(action: str, operator: str, ip: str, detail: str,
     绑定者会立刻收到私聊告警。
     """
     _audit_log(action, operator, ip, ok, detail)
-    msg = (f"⚠️ 看板安全告警\n操作：{action}\n操作人：{operator or '?'}"
+    msg = (f"⚠️ 发布中枢安全告警\n操作：{action}\n操作人：{operator or '?'}"
            f"\nIP：{ip or '-'}\n结果：{'成功' if ok else '被拒绝'}\n详情：{detail or '-'}")
     threading.Thread(target=feishu_bot.notify_security, args=(msg,), daemon=True).start()
 
@@ -1923,9 +1923,9 @@ def run_server(
     httpd = ThreadingHTTPServer((host, port), Handler)
     # 启动横幅全部带 flush=True：后台(nohup)运行时日志文件能立刻看到
     if is_loopback:
-        print(f"🖥  AppStore 发布看板已启动: http://127.0.0.1:{port}/", flush=True)
+        print(f"🖥  App发布中枢已启动: http://127.0.0.1:{port}/", flush=True)
     else:
-        print(f"🖥  AppStore 发布看板已启动（局域网模式，监听 {host}:{port}）", flush=True)
+        print(f"🖥  App发布中枢已启动（局域网模式，监听 {host}:{port}）", flush=True)
         for ip in lan_ips:
             print(f"   同网段访问: http://{ip}:{port}/", flush=True)
         if not lan_ips:

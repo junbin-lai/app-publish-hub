@@ -187,7 +187,7 @@ class GoogleAdapter(StoreAdapter):
             import googleapiclient  # noqa: F401
         except ImportError:
             problems.append(
-                "缺少 Google API 依赖，请安装: pip install app-store-publisher[google]"
+                "缺少 Google API 依赖，请安装: pip install app-publish-hub[google]"
                 "（google-api-python-client / google-auth / google-auth-httplib2）"
             )
         return problems
@@ -201,7 +201,7 @@ class GoogleAdapter(StoreAdapter):
             import socket
         except ImportError as e:
             raise StoreError(
-                f"缺少 Google API 依赖: {e}。安装: pip install app-store-publisher[google]"
+                f"缺少 Google API 依赖: {e}。安装: pip install app-publish-hub[google]"
             )
         creds = self._load_creds(pkg)
         scoped = service_account.Credentials.from_service_account_info(

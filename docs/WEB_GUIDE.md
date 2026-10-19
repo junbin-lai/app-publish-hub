@@ -86,7 +86,7 @@ json.dump(merged, open("config/tasks_history.json", "w"), ensure_ascii=False, in
 3. 启动日志会打印本机局域网地址，例如：
 
    ```
-   🖥  AppStore 发布看板已启动（局域网模式，监听 0.0.0.0:8090）
+   🖥  App发布中枢已启动（局域网模式，监听 0.0.0.0:8090）
       同网段访问: http://192.168.x.x:8090/
       看板配置: config/board.json（登录鉴权: 已开启）
       账号: laijunbin(admin), xiaowang(viewer)

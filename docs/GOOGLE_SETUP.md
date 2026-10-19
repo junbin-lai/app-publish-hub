@@ -36,7 +36,7 @@
 ### 第 2 步：创建或选择项目
 
 1. 顶部项目选择器（左上角 "选择项目" 下拉）→ **新建项目**
-2. 项目名称建议：\`app-store-publisher\`（可随意）
+2. 项目名称建议：\`app-publish-hub\`（可随意）
 3. 创建后，在顶部确认已切换到该项目
 
 ### 第 3 步：启用 Android Publisher API（关键！）
@@ -168,7 +168,7 @@ https://console.cloud.google.com/apis/library/androidpublisher.googleapis.com
 | --- | --- | --- |
 | 搜索「Android Publisher」没结果 | 官方改名了 | 直接搜 `androidpublisher` |
 | 点「启用」是灰的/没反应 | 页面没选中项目 | 顶部项目选择器选一个项目 |
-| 直接链接打开要求先建项目 | 还没创建项目 | 先新建项目（名称随意，如 app-store-publisher） |
+| 直接链接打开要求先建项目 | 还没创建项目 | 先新建项目（名称随意，如 app-publish-hub） |
 | 提示没有权限启用 API | 登录账号不是项目管理员 | 用同一个 Google 主账号登录（和 Play Console 同一个） |
 
 > 提示：这个 API 只需要**启用一次**，之后创建服务账号、在 Play Console 授权即可管理全部 6 个应用。
