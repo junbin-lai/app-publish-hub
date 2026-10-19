@@ -1,7 +1,7 @@
 # App 发布中枢（App Publish Hub）
 
-[![GitHub stars](https://img.shields.io/github/stars/Jimbean-Lai/app-publish-hub?style=social)](https://github.com/Jimbean-Lai/app-publish-hub/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/Jimbean-Lai/app-publish-hub?style=social)](https://github.com/Jimbean-Lai/app-publish-hub/network)
+[![GitHub stars](https://img.shields.io/github/stars/junbin-lai/app-publish-hub?style=social)](https://github.com/junbin-lai/app-publish-hub/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/junbin-lai/app-publish-hub?style=social)](https://github.com/junbin-lai/app-publish-hub/network)
 
 > ⭐ 如果这个项目对你有帮助，可以顺手点个**Star**，非常感谢！🫶
 
