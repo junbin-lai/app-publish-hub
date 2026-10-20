@@ -406,40 +406,53 @@ class HuaweiAdapter(StoreAdapter):
             raise StoreError(f"华为未找到 {pkg} 的 appId")
 
         if scb: scb("获取华为上传地址…")
-        # 2) upload-url（GET 返回 uploadUrl+authCode）
+        # 2) upload-url（GET 返回 uploadUrl+authCode）+ 3) multipart 直传（fields: authCode/fileCount/name/parseType + file）
         import requests
         file_size = os.path.getsize(apk)
-        up = self._get(
-            "/api/publish/v2/upload-url",
-            {"appId": app_id, "releaseType": 1, "suffix": "apk"},
-            pkg,
-        )
-        upload_url = up.get("uploadUrl") or ""
-        auth_code = up.get("authCode") or ""
-        if not upload_url:
-            raise StoreError(f"华为未返回上传地址: {up}")
-
-        if scb: scb("上传 APK 到华为…")
-        # 3) multipart 直传（fields: authCode/fileCount/name/parseType + file）
         pc = (release.metadata or {}).get("_progress_cb")
         apk_name = os.path.basename(apk)
-        if pc:
-            f = open(apk, "rb")
+        # 上传自动重试：仅连接中断/超时重试（每次重取上传地址+authCode、重开文件从 0 重传）；
+        # 拿到任何 HTTP 响应（成功或业务报错）都不重试，与荣耀/应用宝/OPPO 的重连策略一致。
+        r_up = None
+        last_err = None
+        for attempt in range(1, 4):
+            up = self._get(
+                "/api/publish/v2/upload-url",
+                {"appId": app_id, "releaseType": 1, "suffix": "apk"},
+                pkg,
+            )
+            upload_url = up.get("uploadUrl") or ""
+            auth_code = up.get("authCode") or ""
+            if not upload_url:
+                raise StoreError(f"华为未返回上传地址: {up}")
+            if scb: scb("上传 APK 到华为…")
             try:
-                fields = [
-                    ("authCode", auth_code),
-                    ("fileCount", "1"),
-                    ("name", apk_name),
-                    ("parseType", "0"),
-                ]
-                # 有进度回调时用 Monitor 流式
-                body = make_multipart_monitor(fields + [("file", (apk_name, f, "application/octet-stream"))], file_size, pc)
-                r_up = requests.post(upload_url, data=body, headers={"Content-Type": body.content_type}, timeout=600)
-            finally:
-                f.close()
-        else:
-            with open(apk, "rb") as f:
-                r_up = requests.post(upload_url, data={"authCode": auth_code, "fileCount": "1", "name": apk_name, "parseType": "0"}, files={"file": (apk_name, f)}, timeout=600)
+                if pc:
+                    f = open(apk, "rb")
+                    try:
+                        fields = [
+                            ("authCode", auth_code),
+                            ("fileCount", "1"),
+                            ("name", apk_name),
+                            ("parseType", "0"),
+                        ]
+                        # 有进度回调时用 Monitor 流式
+                        body = make_multipart_monitor(fields + [("file", (apk_name, f, "application/octet-stream"))], file_size, pc)
+                        r_up = requests.post(upload_url, data=body, headers={"Content-Type": body.content_type}, timeout=600)
+                    finally:
+                        f.close()
+                else:
+                    with open(apk, "rb") as f:
+                        r_up = requests.post(upload_url, data={"authCode": auth_code, "fileCount": "1", "name": apk_name, "parseType": "0"}, files={"file": (apk_name, f)}, timeout=600)
+                break
+            except (requests.ConnectionError, requests.Timeout) as e:
+                last_err = e
+                if attempt < 3:
+                    if scb:
+                        scb(f"上传中断（{type(e).__name__}），{2 ** attempt} 秒后第 {attempt + 1} 次重试…")
+                    time.sleep(2 ** attempt)
+        if r_up is None:
+            raise StoreError(f"华为文件上传网络错误（已自动重试 3 次）: {last_err}")
         up_json = {}
         try:
             up_json = r_up.json()

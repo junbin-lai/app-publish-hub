@@ -178,41 +178,49 @@ class VivoAdapter(StoreAdapter):
         import time
         md5 = self._md5(apk_path)
         key, secret = self._cred_for(package_name)
-        params: dict = {
-            "access_key": key,
-            "timestamp": str(int(time.time() * 1000)),
-            "method": "app.upload.apk.app",
-            "v": "1.0",
-            "sign_method": "hmac",
-            "format": "json",
-            "target_app_key": "developer",
-            "packageName": package_name,
-            "fileMd5": md5,
-        }
-        params["sign"] = self._sign(params, secret)
         file_size = os.path.getsize(apk_path)
-        try:
-            if cb:
-                # multipart 用 MultipartEncoderMonitor 流式 → 实时进度
-                f = open(apk_path, "rb")
-                try:
-                    fields = list(params.items()) + [
-                        ("file", (apk_path.split("/")[-1], f, "application/vnd.android.package-archive")),
-                    ]
-                    body = make_multipart_monitor(fields, file_size, cb)
-                    # 连接 30s + 读取 1200s：vivo 上传本身慢（20-30 分钟），
-                    # 上传完服务器还要 MD5 校验/病毒扫描，600s 不够 → 提到 1200s
-                    resp = req.post(_DOMAIN, data=body, headers={"Content-Type": body.content_type}, timeout=(30, 1200))
-                finally:
-                    f.close()
-            else:
-                with open(apk_path, "rb") as f:
-                    files = {"file": (apk_path.split("/")[-1], f, "application/vnd.android.package-archive")}
-                    resp = req.post(_DOMAIN, data=params, files=files, timeout=(30, 1200))
-        except req.exceptions.ConnectionError as e:
-            raise StoreError(f"vivo 上传网络连接失败: {e}")
-        except req.exceptions.Timeout as e:
-            raise StoreError(f"vivo 上传请求超时: {e}")
+        # 上传自动重试：仅连接中断/超时重试（每次重算签名时间戳、重开文件从 0 重传）；
+        # 拿到任何 HTTP 响应（成功或业务报错）都不重试，与荣耀/应用宝/OPPO 的重连策略一致。
+        resp = None
+        last_err = None
+        for attempt in range(1, 4):
+            params: dict = {
+                "access_key": key,
+                "timestamp": str(int(time.time() * 1000)),
+                "method": "app.upload.apk.app",
+                "v": "1.0",
+                "sign_method": "hmac",
+                "format": "json",
+                "target_app_key": "developer",
+                "packageName": package_name,
+                "fileMd5": md5,
+            }
+            params["sign"] = self._sign(params, secret)
+            try:
+                if cb:
+                    # multipart 用 MultipartEncoderMonitor 流式 → 实时进度
+                    f = open(apk_path, "rb")
+                    try:
+                        fields = list(params.items()) + [
+                            ("file", (apk_path.split("/")[-1], f, "application/vnd.android.package-archive")),
+                        ]
+                        body = make_multipart_monitor(fields, file_size, cb)
+                        # 连接 30s + 读取 1200s：vivo 上传本身慢（20-30 分钟），
+                        # 上传完服务器还要 MD5 校验/病毒扫描，600s 不够 → 提到 1200s
+                        resp = req.post(_DOMAIN, data=body, headers={"Content-Type": body.content_type}, timeout=(30, 1200))
+                    finally:
+                        f.close()
+                else:
+                    with open(apk_path, "rb") as f:
+                        files = {"file": (apk_path.split("/")[-1], f, "application/vnd.android.package-archive")}
+                        resp = req.post(_DOMAIN, data=params, files=files, timeout=(30, 1200))
+                break
+            except (req.exceptions.ConnectionError, req.exceptions.Timeout) as e:
+                last_err = e
+                if attempt < 3:
+                    time.sleep(2 ** attempt)
+        if resp is None:
+            raise StoreError(f"vivo 上传网络错误（已自动重试 3 次）: {last_err}")
         try:
             payload = resp.json()
         except Exception:

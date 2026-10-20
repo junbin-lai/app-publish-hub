@@ -193,28 +193,39 @@ class XiaomiAdapter(StoreAdapter):
             "SIG": encrypted,
         }
         file_size = os.path.getsize(apk)
-        if pc:
-            import requests as _req
-            f = open(apk, "rb")
+        # 上传自动重试：仅连接中断/超时重试（重开文件从 0 重传，签名只与文件内容绑定可复用）；
+        # 拿到任何 HTTP 响应（成功或业务报错）都不重试，与荣耀/应用宝/OPPO 的重连策略一致。
+        import requests as _req
+        import time as _t
+        resp = None
+        last_err = None
+        for attempt in range(1, 4):
             try:
-                fields = list(req_data.items()) + [
-                    ("apk", (os.path.basename(apk), f, "application/octet-stream")),
-                ]
-                body = make_multipart_monitor(fields, file_size, pc)
-                try:
-                    resp = _req.post(PUSH_URL, data=body, headers={"Content-Type": body.content_type}, timeout=300)
-                except (_req.ConnectionError, _req.Timeout) as e:
-                    raise StoreError(f"小米上传网络错误: {e}")
-            finally:
-                f.close()
-            try:
-                payload = resp.json()
-            except Exception:
-                raise StoreError(f"小米上传返回非 JSON (HTTP {resp.status_code}): {resp.text[:300]}")
-        else:
-            with open(apk, "rb") as f:
-                files: Dict[str, Any] = {"apk": (os.path.basename(apk), f)}
-                payload = self._post(PUSH_URL, data=req_data, files=files)
+                if pc:
+                    f = open(apk, "rb")
+                    try:
+                        fields = list(req_data.items()) + [
+                            ("apk", (os.path.basename(apk), f, "application/octet-stream")),
+                        ]
+                        body = make_multipart_monitor(fields, file_size, pc)
+                        resp = _req.post(PUSH_URL, data=body, headers={"Content-Type": body.content_type}, timeout=300)
+                    finally:
+                        f.close()
+                else:
+                    with open(apk, "rb") as f:
+                        resp = _req.post(PUSH_URL, data=req_data,
+                                         files={"apk": (os.path.basename(apk), f)}, timeout=300)
+                break
+            except (_req.ConnectionError, _req.Timeout) as e:
+                last_err = e
+                if attempt < 3:
+                    _t.sleep(2 ** attempt)
+        if resp is None:
+            raise StoreError(f"小米上传网络错误（已自动重试 3 次）: {last_err}")
+        try:
+            payload = resp.json()
+        except Exception:
+            raise StoreError(f"小米上传返回非 JSON (HTTP {resp.status_code}): {resp.text[:300]}")
 
         if scb: scb("小米发布完成")
         # 小米 push 成功码以文档明确的 result=0 为准（其余历史兼容码已收窄，避免误判成功）

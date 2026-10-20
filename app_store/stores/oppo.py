@@ -118,26 +118,36 @@ class OPPOAdapter(StoreAdapter):
         """上传文件并返回文件 url。file_type 按用途区分（apk/icon/pic 等）；
         图标与截图的正确 type 取值待确认（官方文档未明确，先按用途区分传入）。"""
         import requests as req
-        cfg = self._request("GET", "/resource/v1/upload/get-upload-url", pkg=pkg)
-        upload_url = cfg["data"]["upload_url"]
-        upload_sign = cfg["data"]["sign"]
         file_size = os.path.getsize(file_path)
-        try:
-            if cb:
-                with open(file_path, "rb") as f:
-                    fields = [
-                        ("sign", upload_sign),
-                        ("type", file_type),
-                        ("file", (os.path.basename(file_path), f, "application/octet-stream")),
-                    ]
-                    body = make_multipart_monitor(fields, file_size, cb)
-                    resp = req.post(upload_url, data=body, headers={"Content-Type": body.content_type}, timeout=600)
-            else:
-                with open(file_path, "rb") as f:
-                    resp = req.post(upload_url, data={"sign": upload_sign, "type": file_type},
-                                    files={"file": (os.path.basename(file_path), f)}, timeout=600)
-        except (req.ConnectionError, req.Timeout) as e:
-            raise StoreError(f"OPPO 文件上传网络错误: {e}")
+        # 上传自动重试：仅连接中断/超时重试（每次重取上传地址+签名、重开文件从 0 重传）；
+        # 拿到任何 HTTP 响应（成功或业务报错）都不重试，与荣耀/应用宝的重连策略一致。
+        resp = None
+        last_err = None
+        for attempt in range(1, 4):
+            cfg = self._request("GET", "/resource/v1/upload/get-upload-url", pkg=pkg)
+            upload_url = cfg["data"]["upload_url"]
+            upload_sign = cfg["data"]["sign"]
+            try:
+                if cb:
+                    with open(file_path, "rb") as f:
+                        fields = [
+                            ("sign", upload_sign),
+                            ("type", file_type),
+                            ("file", (os.path.basename(file_path), f, "application/octet-stream")),
+                        ]
+                        body = make_multipart_monitor(fields, file_size, cb)
+                        resp = req.post(upload_url, data=body, headers={"Content-Type": body.content_type}, timeout=600)
+                else:
+                    with open(file_path, "rb") as f:
+                        resp = req.post(upload_url, data={"sign": upload_sign, "type": file_type},
+                                        files={"file": (os.path.basename(file_path), f)}, timeout=600)
+                break
+            except (req.ConnectionError, req.Timeout) as e:
+                last_err = e
+                if attempt < 3:
+                    time.sleep(2 ** attempt)
+        if resp is None:
+            raise StoreError(f"OPPO 文件上传网络错误（已自动重试 3 次）: {last_err}")
         try:
             r = resp.json()
         except Exception:
