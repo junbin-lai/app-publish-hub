@@ -106,9 +106,9 @@ class _ProgressFile:
         self.close()
 
 
-# 上传 AAB 后是否需要等 processing 完成再 commit（大包 1-3 分钟）
-_PROCESSING_POLL_SECONDS = 5
-_PROCESSING_MAX_WAIT = 300
+# commit 时安装包仍在处理会返回 5xx：直接退避重试，不再前台轮询干等
+_COMMIT_MAX_ATTEMPTS = 3
+_COMMIT_RETRY_DELAY = 8  # 秒，第 n 次重试等待 n 倍
 
 
 class GoogleAdapter(StoreAdapter):
@@ -319,13 +319,6 @@ class GoogleAdapter(StoreAdapter):
                 scb("上传完成 (versionCode " + str(uploaded.get("versionCode") or "") + ")")
             version_code = uploaded.get("versionCode") or release.version_code
 
-            # 大 AAB 上传后需等待 processing 完成
-            if is_aab:
-                if scb:
-                    scb("等待 Google 处理（processing）…")
-                self._wait_processing(service, package, edit_id, version_code,
-                                      kill_cb=(release.metadata or {}).get("_kill_cb"))
-
             if scb:
                 scb("提交发布（tracks.update → commit）…")
 
@@ -361,18 +354,37 @@ class GoogleAdapter(StoreAdapter):
                     ),
                 }
             track_body = {"track": release.track, "releases": [release_body]}
-            service.edits().tracks().update(
-                packageName=package, editId=edit_id, track=release.track, body=track_body
-            ).execute()
-
-            if auto_review:
-                # 自动送审：提交 edit 让 Google 开始审核（审核通过后按所选发布方式上线）
-                service.edits().commit(packageName=package, editId=edit_id).execute()
-            else:
-                # 存草稿不送审
-                service.edits().commit(
-                    packageName=package, editId=edit_id, changesNotSentForReview=True
-                ).execute()
+            # 不再前台轮询等待 processing：bundles.list 返回的 Bundle 没有 status 字段，
+            # 旧实现每次都白等满上限。改为直接提交，命中 5xx（安装包仍在处理）时退避重试。
+            kill_cb = (release.metadata or {}).get("_kill_cb")
+            for attempt in range(_COMMIT_MAX_ATTEMPTS):
+                if kill_cb:
+                    kill_cb()
+                try:
+                    service.edits().tracks().update(
+                        packageName=package, editId=edit_id, track=release.track, body=track_body
+                    ).execute()
+                    if auto_review:
+                        # 自动送审：提交 edit 让 Google 开始审核（审核通过后按所选发布方式上线）
+                        service.edits().commit(packageName=package, editId=edit_id).execute()
+                    else:
+                        # 存草稿不送审
+                        service.edits().commit(
+                            packageName=package, editId=edit_id, changesNotSentForReview=True
+                        ).execute()
+                    break
+                except TaskKilledError:
+                    raise
+                except Exception as e:
+                    if not self._is_retryable_commit(e) or attempt == _COMMIT_MAX_ATTEMPTS - 1:
+                        raise
+                    delay = _COMMIT_RETRY_DELAY * (attempt + 1)
+                    print(f"Google Play 提交返回服务端错误（第 {attempt + 1} 次），{delay}s 后重试: {e}",
+                          file=sys.stderr)
+                    if scb:
+                        scb(f"Google 仍在处理安装包（服务端错误），{delay}s 后重试提交"
+                            f"（{attempt + 2}/{_COMMIT_MAX_ATTEMPTS}）…")
+                    time.sleep(delay)
             mode_note = (
                 "全量发布，审核通过后自动 100% 上线"
                 if auto_review and release_mode == "full"
@@ -403,34 +415,20 @@ class GoogleAdapter(StoreAdapter):
                 raise
             raise StoreError(f"Google Play 发布失败: {e}")
 
-    def _wait_processing(self, service, package: str, edit_id: str, version_code: Any, kill_cb=None) -> None:
-        """等待大 AAB processing 完成后再 commit（避免 500）。不阻塞太久。
+    @staticmethod
+    def _is_retryable_commit(e: Exception) -> bool:
+        """commit 是否值得重试：只认 5xx（安装包仍在处理/Google 侧临时故障）。
 
-        kill_cb：停止请求检查回调（每次轮询前调用，抛 TaskKilledError 立即中断等待）。
-        必须放在 try 外：轮询异常分支会吞掉 try 内抛出的 TaskKilledError。
+        4xx 是权限/参数/审核状态问题，重试无意义；网络超时可能是提交已成功，
+        重试会得到「edit 已提交」报错，故不纳入重试。
         """
-        import time
-        waited = 0
-        while waited < _PROCESSING_MAX_WAIT:
-            if kill_cb:
-                kill_cb()
-            try:
-                bundles = (
-                    service.edits()
-                    .bundles()
-                    .list(packageName=package, editId=edit_id)
-                    .execute()
-                )
-                for b in bundles.get("bundles", []):
-                    if b.get("versionCode") == str(version_code) and b.get("status") in ("ready", ""):
-                        return
-                time.sleep(_PROCESSING_POLL_SECONDS)
-                waited += _PROCESSING_POLL_SECONDS
-            except Exception as e:
-                # 轮询异常不静默：记录到 stderr 后继续等待（偶发查询失败不影响最终结果）
-                print(f"Google Play 等待 processing 轮询异常（继续等待）: {e}", file=sys.stderr)
-                time.sleep(_PROCESSING_POLL_SECONDS)
-                waited += _PROCESSING_POLL_SECONDS
+        status = getattr(e, "status_code", None)
+        if status is None:
+            status = getattr(getattr(e, "resp", None), "status", None)
+        try:
+            return 500 <= int(status) <= 599
+        except (TypeError, ValueError):
+            return False
 
     @staticmethod
     def _explain_error(e: Exception) -> str:

@@ -37,6 +37,10 @@ _OPENAPI = "https://appmarket-openapi-drcn.cloud.honor.com/openapi/v1/publish"
 # 文件类型：100=APK 应用包（其余：1=图标 3=应用介绍截图 等，详见文档文件类型表）
 _FILE_TYPE_APK = 100
 
+# token 请求重试：荣耀 IAM 偶发连接超时（国内网络抖动），单次失败不该让整个发布任务失败
+_TOKEN_MAX_ATTEMPTS = 3
+_TOKEN_CONNECT_TIMEOUT = 15  # 秒，连接阶段；读阶段沿用 30s
+
 
 def _parse_release_time(ts: str) -> Optional[datetime.datetime]:
     """解析荣耀 publishInfo.releaseTime（如 2026-09-14T09:27:49+0800）为带时区时间；失败返回 None。"""
@@ -90,14 +94,21 @@ class HonorAdapter(StoreAdapter):
             if cached and time.time() < cached[1]:
                 return cached[0]
         # 锁外请求，避免长时间持锁；并发下可能重复请求 token，无副作用
-        try:
-            resp = req.post(_IAM_URL, data={
-                "grant_type": "client_credentials",
-                "client_id": cid,
-                "client_secret": sec,
-            }, timeout=30)
-        except (req.ConnectionError, req.Timeout) as e:
-            raise StoreError(f"荣耀获取 token 网络错误: {e}")
+        # 网络抖动（连接超时/ConnectionReset）重试 3 次，退避 2s、4s
+        for attempt in range(1, _TOKEN_MAX_ATTEMPTS + 1):
+            try:
+                resp = req.post(_IAM_URL, data={
+                    "grant_type": "client_credentials",
+                    "client_id": cid,
+                    "client_secret": sec,
+                }, timeout=(_TOKEN_CONNECT_TIMEOUT, 30))
+                break
+            except (req.ConnectionError, req.Timeout) as e:
+                if attempt == _TOKEN_MAX_ATTEMPTS:
+                    raise StoreError(
+                        f"荣耀获取 token 网络错误（重试 {_TOKEN_MAX_ATTEMPTS} 次仍失败）: {e}")
+                print(f"荣耀获取 token 第 {attempt} 次失败，重试: {e}", file=sys.stderr)
+                time.sleep(2 ** attempt)
         try:
             d = resp.json()
         except Exception:

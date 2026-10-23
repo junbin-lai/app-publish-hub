@@ -219,13 +219,23 @@ def build_publish_card(task: Dict[str, Any], app_name: str, image_key: str = "")
         template, icon, word = "green", "✅", "发布完成"
     elif status == "killed":
         template, icon, word = "grey", "⏹", "发布已手动停止"
+    elif ok_plats:
+        # 有成功也有失败：不要笼统写「发布失败」，否则成功的平台会被误读
+        template, icon, word = "orange", "⚠️", "部分平台失败"
     else:
         template, icon, word = "red", "❌", "发布失败"
 
     title = f"{icon} {word} · {app_name}" + (f" v{version}" if version else "")
+    # 有失败时明确标注「成功平台」，避免只看到失败明细、不知道哪些平台已经提交成功
+    if bad:
+        plat_label = f"**成功平台（{len(ok_plats)}）**"
+        plat_value = "、".join(ok_plats) if ok_plats else "—（无）"
+    else:
+        plat_label = "**平台**"
+        plat_value = "、".join(ok_plats) if ok_plats else "—"
     fields = [
         {"is_short": True, "text": {"tag": "lark_md", "content": f"**应用**\n{app_name}"}},
-        {"is_short": True, "text": {"tag": "lark_md", "content": f"**平台**\n{', '.join(ok_plats) if ok_plats else '—'}"}},
+        {"is_short": True, "text": {"tag": "lark_md", "content": f"{plat_label}\n{plat_value}"}},
         {"is_short": True, "text": {"tag": "lark_md", "content": f"**操作者**\n{task.get('user') or '—'}"}},
         {"is_short": True, "text": {"tag": "lark_md", "content": f"**结束时间**\n{task.get('finished_at') or '—'}"}},
     ]
@@ -847,39 +857,42 @@ def classify_publish_outcome(task: Dict[str, Any]) -> str:
     return "all_success"
 
 
-# 通知场景开关：默认只在「勾选平台全部送审成功」时通知（2026-09-23 产品要求），
-# 其余场景预留字段，以后要开改成 true 重启即可
+# 通知场景开关：成功/部分失败/全部失败都通知（失败更需要第一时间知道），
+# 手动停止与「只存草稿」默认不打扰；要改在 board.json feishu.notify_on 覆盖
 _NOTIFY_SCENARIOS_DEFAULT = {
-    "all_success": True,      # 正式发布·勾选平台全部提审成功
-    "partial_success": False,  # 部分平台成功（其余失败/仅草稿）
-    "failed": False,           # 全部平台失败
+    "all_success": True,       # 正式发布·勾选平台全部提审成功
+    "partial_success": True,   # 部分平台成功（其余失败/仅草稿）
+    "failed": True,            # 全部平台失败
     "killed": False,           # 被手动停止
     "draft_only": False,       # 只存了草稿未送审（如 Google 未勾自动送审）
 }
 
 
-def notify_publish_finished(task: Dict[str, Any], app_name: str) -> None:
+def notify_publish_finished(task: Dict[str, Any], app_name: str) -> str:
     """发布任务结束后发通知（应在独立线程调用，本函数不再起线程）。
 
     是否通知由 board.json feishu.notify_on 按场景控制（默认只开 all_success：
     勾选的平台全部真实送审成功才发）。通知内容：结果卡片（含摘要+分享图）。
+
+    返回值（供调用方决定是否在任务步骤里展示）：
+    "sent" 已发送；"failed" 发送失败；"skip:原因" 按规则/配置跳过（不发也不应打步骤日志）。
     """
     path = _ENV["board_config_path"]
     fs = board_config.feishu_config(path)
     chat_id = fs.get("notify_chat_id") or ""
     app_id_key, app_secret = fs.get("app_id", ""), fs.get("app_secret", "")
     if not (app_id_key and app_secret):
-        return
+        return "skip:no_credentials"
     if not _LARK_OK:
         _log("跳过飞书通知：未安装 lark-oapi")
-        return
+        return "skip:no_lark"
     if fs.get("notify_on_publish") is False:
-        return
+        return "skip:disabled"
     if not chat_id:
         _log("跳过飞书通知：未绑定通知群（群里 @机器人 发送「绑定通知群」）")
-        return
+        return "skip:no_chat"
     if task.get("dry_run"):
-        return
+        return "skip:dry_run"
     # 按场景过滤（notify_on 未配置时用默认值：只有 all_success 通知）
     scenario = classify_publish_outcome(task)
     notify_on = fs.get("notify_on") if isinstance(fs.get("notify_on"), dict) else {}
@@ -887,7 +900,7 @@ def notify_publish_finished(task: Dict[str, Any], app_name: str) -> None:
                                                if k in _NOTIFY_SCENARIOS_DEFAULT}}
     if not enabled.get(scenario, False):
         _log(f"跳过飞书通知：场景 {scenario} 未开启（board.json feishu.notify_on.{scenario}）")
-        return
+        return "skip:scenario"
     try:
         time.sleep(5)  # 等平台状态接口稍缓一口气，刚提交的版本能查到
         image_key = ""
@@ -913,5 +926,7 @@ def notify_publish_finished(task: Dict[str, Any], app_name: str) -> None:
         card = build_publish_card(task, app_name, image_key)
         send_message(app_id_key, app_secret, chat_id, "interactive", json.dumps(card, ensure_ascii=False))
         _log(f"已发送发布通知到群 {chat_id}")
+        return "sent"
     except Exception as e:
         _log(f"飞书通知发送失败: {e}")
+        return "failed"

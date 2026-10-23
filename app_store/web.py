@@ -12,11 +12,11 @@ API：
   GET  /api/validate          校验凭证（返回 ok 列表）
   POST /api/login             {username, password} → 会话 Cookie
   POST /api/logout            退出登录
-  POST /api/publish           {app_id, platform|all, dry_run}（admin）
+  POST /api/publish           {app_id, platform|all, dry_run}（publisher / owner）
   POST /api/status            {app_id, platform?}（viewer 可用）
   GET  /api/users             用户列表（仅 owner）
-  POST /api/users             {username, password, role} 新增（仅 owner，密码自动哈希落盘）
-  POST /api/users/update      {username, password?, role?} 改密码/角色（仅 owner）
+  POST /api/users             {username, password, role, apps?} 新增（仅 owner，密码自动哈希落盘）
+  POST /api/users/update      {username, password?, role?, apps?} 改密码/角色/授权应用（仅 owner）
   POST /api/users/delete      {username} 删除（仅 owner）
 """
 from __future__ import annotations
@@ -54,7 +54,7 @@ PUBLISH_PLATFORMS = {p for p in PLATFORM_VALUES if p != "apple"}
 # 避免误写误删真实发布历史（config/tasks_history.json）
 _HISTORY_FILE = os.environ.get("APPSTORE_HISTORY_FILE") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "config", "tasks_history.json")
-_HISTORY_MAX = 50
+_HISTORY_MAX = 500  # 条数硬上限（防内存/文件无限增长）；实际保留期由 history_retention_days 控制
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 
@@ -256,6 +256,40 @@ _PENDING_PATHS: dict = {}
 _FINISHED_TASKS_MAX = 200  # 内存中最多保留的已完成任务条数（超出按完成时间淘汰最旧）
 
 
+def _dlog(tag: str, msg: str) -> None:
+    """调试日志：关键改动点（并发拦截/历史落盘/任务状态）打详细日志，方便验证排查。
+
+    输出到服务日志（stdout，重定向到 tmpdoc/web-8090.log），带线程名可区分并行任务。
+    """
+    tname = threading.current_thread().name
+    print(f"[{time.strftime('%H:%M:%S')}][{tag}][{tname}] {msg}", flush=True)
+
+
+# ---- 全局上传并发闸（进程级，跨任务/跨应用共享）----
+_upload_sem = None
+_upload_sem_lock = threading.Lock()
+
+
+def _get_upload_sem() -> threading.Semaphore:
+    """多应用并行发布时限制同时上传的平台数，防止上行带宽被打满。
+
+    上限来自 board.json 的 upload_concurrency（默认 2）。首次发布时初始化。
+    闸的范围覆盖整个 adapter.publish()（上传为主，也含提交与 OPPO 提交确认等
+    短等待）——各适配器上传实现私有无公共缝隙，按整段限流是唯一干净切口。
+    """
+    global _upload_sem
+    if _upload_sem is None:
+        with _upload_sem_lock:
+            if _upload_sem is None:
+                try:
+                    n = board_config.upload_concurrency(Handler.board_config_path)
+                except Exception:
+                    n = 2
+                _upload_sem = threading.Semaphore(n)
+                _dlog("上传闸", f"初始化：全局上传并发上限 {n} 路（board.json upload_concurrency 可调）")
+    return _upload_sem
+
+
 def _history_path():
     p = os.path.abspath(_HISTORY_FILE)
     os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -278,8 +312,40 @@ def _preserve_mode(tmp: str, path: str) -> None:
         pass
 
 
+_history_loaded = False  # _load_history() 成功后置 True；防外部进程未加载即写盘清空历史
+
+
+def _history_cutoff() -> str:
+    """发布历史保留期的截止时间串（"%Y-%m-%d %H:%M:%S"）；空串表示不按时间清理。
+
+    保留天数来自 board.json history_retention_days（默认 60）。finished_at 早于
+    截止时间的记录在加载/落盘时丢弃。解析失败的记录按“保留”处理，不误删数据。
+    """
+    try:
+        days = board_config.history_retention_days(Handler.board_config_path)
+    except Exception:
+        days = 60
+    if days <= 0:
+        return ""
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - days * 86400))
+
+
+def _history_keep(it: dict, cutoff: str) -> bool:
+    """该历史记录是否在保留期内（cutoff 为空或时间无法解析时保留）。"""
+    if not cutoff:
+        return True
+    ts = str(it.get("finished_at") or "")
+    if not ts:
+        return True
+    return ts >= cutoff  # 同格式字符串可直接按字典序比较
+
+
 def _load_history():
-    """启动时把 config/tasks_history.json 里的历史任务加载进 _TASKS（供前端展示）。"""
+    """启动时把 config/tasks_history.json 里的历史任务加载进 _TASKS（供前端展示）。
+
+    超出 history_retention_days 的记录不加载；文件本身在下一次落盘时被裁剪。
+    """
+    global _history_loaded
     try:
         with open(_history_path(), "r", encoding="utf-8") as f:
             items = json.load(f)
@@ -287,33 +353,69 @@ def _load_history():
         return
     if not isinstance(items, list):
         return
+    cutoff = _history_cutoff()
+    skipped = 0
     with _task_lock:
         for it in items:
             if not isinstance(it, dict) or not it.get("id") or it.get("dry_run"):
                 continue
+            if not _history_keep(it, cutoff):
+                skipped += 1
+                continue
             tid = it["id"]
             if tid not in _TASKS:
                 _TASKS[tid] = it
+    _history_loaded = True
+    if skipped:
+        _dlog("历史加载", f"按保留期（{cutoff} 之后）过滤掉 {skipped} 条过期记录")
 
 
 def _save_history():
-    """把最近的稳定任务（done/error/已取消）写盘，最多保留 _HISTORY_MAX 条；dry-run 校验任务不入历史。"""
+    """把最近的稳定任务（done/error/已取消）写盘，最多保留 _HISTORY_MAX 条，
+    并按 history_retention_days（默认 60 天）丢弃过期记录；dry-run 校验任务不入历史。
+
+    多应用并行发布时，不同任务可能同时结束并同时触发写盘；写盘全程持锁串行化，
+    避免两个线程写同一个 .tmp 文件导致内容交叉后损坏历史。
+
+    防呆：只有 _load_history() 执行过（服务进程正常启动）才允许写盘。
+    2026-10-23 事故：在独立进程里直接调用本函数做验证，_TASKS 为空 →
+    空列表覆盖了正式文件（84KB 历史被清成 2 字节）。此后未加载过历史的进程
+    一律拒绝写盘并记日志。
+    """
+    if not _history_loaded:
+        _dlog("历史落盘", "拒绝写盘：本进程未执行 _load_history（非服务进程或未完成启动），跳过以免清空历史")
+        return
+    t0 = time.time()
+    cutoff = _history_cutoff()
+    # 先探测锁是否被占：被占说明有另一个线程正在写盘，本线程将排队等待（串行化生效的证据）
+    contended = not _task_lock.acquire(blocking=False)
+    if contended:
+        _task_lock.acquire()
     try:
-        with _task_lock:
-            stable = [
-                v for v in _TASKS.values()
-                if v.get("status") in ("done", "error", "killed")
-                and not v.get("dry_run")
-            ]
-            stable.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
-            items = stable[:_HISTORY_MAX]
+        n_all = len([v for v in _TASKS.values() if v.get("status") in ("done", "error", "killed") and not v.get("dry_run")])
+        stable = [
+            v for v in _TASKS.values()
+            if v.get("status") in ("done", "error", "killed")
+            and not v.get("dry_run")
+            and _history_keep(v, cutoff)
+        ]
+        expired = n_all - len(stable)
+        stable.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
+        items = stable[:_HISTORY_MAX]
+        if contended:
+            _dlog("历史落盘", f"检测到并发写盘（锁被占用，已排队获得），本次将写入 {len(items)} 条")
         tmp = _history_path() + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(items, f, ensure_ascii=False, indent=1)
         _preserve_mode(tmp, _history_path())
         os.replace(tmp, _history_path())
-    except Exception:
-        pass
+        _dlog("历史落盘", f"完成：候选 {n_all} 条 → 淘汰过期 {expired} 条 → 落盘 {len(items)} 条，"
+              f"耗时 {time.time()-t0:.3f}s（保留期起于 {cutoff or '不限制'}；"
+              f"最新: {(items[0].get('finished_at') or '?') if items else '无'}）")
+    except Exception as e:
+        _dlog("历史落盘", f"失败: {e!r}")
+    finally:
+        _task_lock.release()
 
 
 def _new_task(app_id, platform, dry_run, apk_path="", aab_path="", version_name=""):
@@ -357,6 +459,10 @@ def _update(tid, **kw):
                         _TASKS.pop(k, None)
     # _save_history 有自己的锁，在外部调用避免死锁
     if kw.get("status") in ("done", "error", "killed"):
+        t = _TASKS.get(tid) or {}
+        _dlog("任务终态", f"tid={tid} app={t.get('app_id') or '?'} v{t.get('version_name') or '?'} "
+              f"状态={kw.get('status')} 成功 {len(t.get('results') or [])} / 失败 {len(t.get('errors') or [])} "
+              f"平台={t.get('platform')} → 触发历史落盘")
         _save_history()
         # 飞书群通知（异步线程，失败不影响任务结果；dry-run 不通知）
         if not kw.get("_no_notify") and not _TASKS.get(tid, {}).get("notify_started"):
@@ -521,7 +627,23 @@ def _publish_worker(tid: str):
                 def _kill_cb():
                     _check_kill(tid)
                 rel.metadata["_kill_cb"] = _kill_cb
-                res = adapter.publish(rel, dry_run=dry_run)
+                # 全局上传闸：限制同时上传/发布的平台数（跨任务共享）。
+                # 等待期间每 2s 响应一次停止请求，避免排队平台无法被停止
+                sem = _get_upload_sem()
+                waited = False
+                while not sem.acquire(timeout=2):
+                    if not waited:
+                        waited = True
+                        _step(tid, f"  {key}: 等待上传通道（已达并发上限，排队中）…")
+                        _pstep(tid, key, "等待上传通道（其他平台上传中，排队）")
+                        _dlog("上传闸", f"排队：{key}（app={app_id} tid={tid}）等待上传通道")
+                    _check_kill(tid)  # 排队中也能被停止打断
+                if waited:
+                    _dlog("上传闸", f"放行：{key}（app={app_id} tid={tid}）获得上传通道")
+                try:
+                    res = adapter.publish(rel, dry_run=dry_run)
+                finally:
+                    sem.release()
                 ok = bool(res.ok)
                 item = {"platform": key, "ok": ok, "message": res.message,
                         "remote_reference": res.remote_reference, "state": res.state.value}
@@ -584,7 +706,7 @@ _session_lock = threading.Lock()
 _SESSIONS: Dict[str, Dict[str, Any]] = {}  # token -> {username, role, expires_at}
 _SESSION_COOKIE = "board_session"
 
-# viewer 也能调用的 POST 接口（只读性质）；其余 POST 一律要求 admin
+# viewer 也能调用的 POST 接口（只读性质）；其余 POST 一律要求 publisher/owner
 _READ_ONLY_POST_PATHS = {"/api/login", "/api/logout", "/api/status", "/api/apk/meta"}
 
 
@@ -610,16 +732,16 @@ def _session_get(token: str) -> Optional[Dict[str, Any]]:
         # 滑动续期：访问即刷新过期时间（有效期由 board.json session_days 控制）
         days = board_config.session_days(Handler.board_config_path)
         s["expires_at"] = _now_ts() + days * 86400
-        return {"username": s["username"], "role": s["role"]}
+        return {"username": s["username"], "role": s["role"], "apps": s.get("apps")}
 
 
-def _session_create(username: str, role: str) -> str:
+def _session_create(username: str, role: str, apps: Optional[List[str]] = None) -> str:
     token = secrets.token_urlsafe(32)
     days = board_config.session_days(Handler.board_config_path)
     with _session_lock:
         _session_clean()
         _SESSIONS[token] = {
-            "username": username, "role": role,
+            "username": username, "role": role, "apps": apps,
             "expires_at": _now_ts() + days * 86400,
         }
         # 同一用户旧会话收敛（防无限累积；允许双端并存，只保留最近两个）
@@ -667,11 +789,34 @@ def _auth_enabled() -> bool:
     return board_config.auth_enabled(Handler.board_config_path)
 
 
-def _request_user(handler: BaseHTTPRequestHandler) -> Optional[Dict[str, str]]:
-    """从 Cookie 会话取当前用户；未开启鉴权时视为本机 admin 模式。"""
+def _request_user(handler: BaseHTTPRequestHandler) -> Optional[Dict[str, Any]]:
+    """从 Cookie 会话取当前用户；未开启鉴权时视为本机 owner 模式（全部权限）。"""
     if not _auth_enabled():
-        return {"username": "", "role": "admin"}
+        return {"username": "", "role": "owner", "apps": None}
     return _session_get(_read_cookie(handler, _SESSION_COOKIE))
+
+
+def _user_apps(user: Optional[Dict[str, Any]]) -> Optional[List[str]]:
+    """当前用户可用应用范围：None = 全部应用；list = 白名单（可能为空）。"""
+    if not user:
+        return []
+    if user.get("role") == "owner" or not _auth_enabled():
+        return None
+    apps = user.get("apps")
+    if apps is None:  # 未配置 apps 键 = 全部应用（向后兼容旧配置）
+        return None
+    return [str(a) for a in apps]
+
+
+def _can_app(user: Optional[Dict[str, Any]], app_id: str) -> bool:
+    scope = _user_apps(user)
+    return scope is None or app_id in scope
+
+
+def _require_app(user: Optional[Dict[str, Any]], app_id: str) -> None:
+    """无该应用权限时抛 StoreError（写接口统一转 400/403 → 前端提示）。"""
+    if not _can_app(user, app_id):
+        raise StoreError(f"当前账号没有应用 {app_id} 的权限，请联系 owner 授权")
 
 
 def _same_origin(handler: BaseHTTPRequestHandler) -> bool:
@@ -691,15 +836,20 @@ def _same_origin(handler: BaseHTTPRequestHandler) -> bool:
         return False
 
 
-def _users_to_save(users: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    """把 list_users() 的结果规范成写回格式：统一转 password_sha256，明文密码不落盘。"""
-    out: List[Dict[str, str]] = []
+def _users_to_save(users: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """把 list_users() 的结果规范成写回格式：统一转 password_sha256，明文密码不落盘。
+
+    apps 为 None 时省略该键（= 全部应用，向后兼容）；[] 表示无应用，需显式写入。
+    """
+    out: List[Dict[str, Any]] = []
     for u in users:
         e = {"username": u["username"], "role": u["role"]}
         if u.get("password_sha256"):
             e["password_sha256"] = u["password_sha256"]
         elif u.get("password"):
             e["password_sha256"] = hashlib.sha256(u["password"].encode("utf-8")).hexdigest()
+        if u.get("apps") is not None:
+            e["apps"] = list(u.get("apps") or [])
         out.append(e)
     return out
 
@@ -951,9 +1101,13 @@ def _notify_feishu_publish(tid: str) -> None:
     except Exception:
         pass
     try:
-        _step(tid, "飞书通知: 发送中…")
-        feishu_bot.notify_publish_finished(snapshot, app_name)
-        _step(tid, "飞书通知: 已处理", "ok")
+        outcome = feishu_bot.notify_publish_finished(snapshot, app_name)
+        if outcome == "sent":
+            _step(tid, "飞书通知: 已发送", "ok")
+        elif outcome == "failed":
+            _step(tid, "飞书通知: 发送失败（详见服务日志）", "error")
+        # 其余 skip:*（手动停止/场景未开启/未配置/未绑群等）不打步骤日志——
+        # 规则上就不发通知，避免“发送中…”误导
     except Exception as e:
         _step(tid, f"飞书通知: 失败 {e}", "error")
 
@@ -1059,13 +1213,24 @@ class Handler(BaseHTTPRequestHandler):
     def _catalog(self):
         return get_catalog(self.catalog_path)
 
+    def _app_denied(self, app_id: str) -> bool:
+        """应用级权限校验（GET 接口用）：无权限时直接回 403 JSON 并返回 True。"""
+        if _can_app(_request_user(self), app_id):
+            return False
+        _json_response(self, {"ok": False, "error": f"当前账号没有应用 {app_id} 的权限"}, 403)
+        return True
+
+    def _require_app_perm(self, app_id: str) -> None:
+        """应用级权限校验（POST 接口用）：无权限时抛 StoreError。"""
+        _require_app(_request_user(self), app_id)
+
     # ---- 鉴权 ----
     def _check_auth(self, path: str, write: bool) -> Optional[Tuple[int, str]]:
         """返回 (HTTP 状态码, 原因)（None = 放行）。
 
         - 未开启鉴权（board.json 无 users）：全部放行（本机模式）
         - 页面 / 与 /api/session、/api/login、/api/logout 不需要登录
-        - 其余 API 需要登录会话；写操作额外要求 admin 角色 + 同源校验
+        - 其余 API 需要登录会话；写操作额外要求 publisher/owner 角色 + 同源校验
         - 敏感写操作与越权/跨站尝试写入审计日志 config/login_log.jsonl
         """
         if not _auth_enabled():
@@ -1083,7 +1248,7 @@ class Handler(BaseHTTPRequestHandler):
                                user.get("username") or "?", _client_ip(self), False,
                                "跨站请求被拒绝")
                 return (403, "origin")
-            if user.get("role") not in ("admin", "owner"):
+            if user.get("role") not in ("publisher", "owner"):
                 if path in _USER_MGMT_PATHS:
                     # viewer 试图碰用户管理接口：安全告警（可能是账号被盗后试探）
                     _security_alert("用户管理越权尝试", user.get("username") or "?",
@@ -1095,7 +1260,7 @@ class Handler(BaseHTTPRequestHandler):
                                user.get("username") or "?", _client_ip(self), False,
                                "viewer 只读账号尝试写操作被拒绝")
                 return (403, "role")
-            # admin 的敏感写操作 → 记审计日志
+            # publisher 的敏感写操作 → 记审计日志
             # （登录/登出在各自接口里记；发布在 _api_publish 里记更细的参数；
             #  用户管理在各 handler 内带操作明细记，并做飞书告警）
             if path in _AUDIT_PATHS and path not in (
@@ -1110,7 +1275,7 @@ class Handler(BaseHTTPRequestHandler):
         elif reason == "origin":
             _json_response(self, {"ok": False, "error": "跨站请求被拒绝（Origin 校验未通过）"}, 403)
         else:
-            _json_response(self, {"ok": False, "error": "无权执行该操作（发布类操作需要 admin 账号，当前为只读 viewer）"}, 403)
+            _json_response(self, {"ok": False, "error": "无权执行该操作（发布类操作需要 publisher 账号，当前为只读 viewer）"}, 403)
 
     # ---- GET ----
     def do_GET(self):  # noqa: N802
@@ -1123,9 +1288,15 @@ class Handler(BaseHTTPRequestHandler):
                 return _html_response(self, INDEX_HTML)
             if path == "/api/apps":
                 catalog = self._catalog()
+                me = _request_user(self)
+                scope = _user_apps(me)
+                apps = [a for a in catalog.all_apps() if scope is None or a["id"] in scope]
+                # 分类只保留有可见应用的项，避免空分类出现在侧栏
+                cats = [c for c in catalog.categories()
+                        if any(a.get("category") == c for a in apps)]
                 payload = {
-                    "categories": [{"name": c} for c in catalog.categories()],
-                    "apps": [catalog.status_payload(a["id"]) for a in catalog.all_apps()],
+                    "categories": [{"name": c} for c in cats],
+                    "apps": [catalog.status_payload(a["id"]) for a in apps],
                 }
                 return _json_response(self, payload)
             if path == "/api/app/icon":
@@ -1156,13 +1327,26 @@ class Handler(BaseHTTPRequestHandler):
                 with _task_lock:
                     # 并行发布时工作线程会持续 append 各平台字段，必须快照后再序列化
                     task = _c.deepcopy(_TASKS.get(tid, {"error": "not found"}))
+                if task.get("app_id") and self._app_denied(str(task["app_id"])):
+                    return
                 return _json_response(self, task)
             if path == "/api/tasks":
                 import copy as _c2
+                # light=1 只返回 running 列表：前端侧栏角标每几秒刷一次，
+                # 不带全量历史，避免并行发布时反复 deepcopy/传输 200 条记录
+                qs_light = (parse_qs(urlparse(self.path).query).get("light") or [""])[0] == "1"
+                scope = _user_apps(_request_user(self))
+                def _visible(v):
+                    return scope is None or (v.get("app_id") or "") in scope
                 with _task_lock:
-                    running = [_c2.deepcopy(v) for v in _TASKS.values() if v.get("status") in ("running",)]
+                    running = [_c2.deepcopy(v) for v in _TASKS.values()
+                               if v.get("status") in ("running",) and _visible(v)]
+                    if qs_light:
+                        return _json_response(self, {"running": running})
                     # dry-run 校验任务不进历史列表
-                    history = [_c2.deepcopy(v) for v in _TASKS.values() if v.get("status") in ("done", "error", "killed") and not v.get("dry_run")]
+                    history = [_c2.deepcopy(v) for v in _TASKS.values()
+                               if v.get("status") in ("done", "error", "killed")
+                               and not v.get("dry_run") and _visible(v)]
                 history.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
                 return _json_response(self, {"running": running, "history": history[:_HISTORY_MAX]})
             return _json_response(self, {"error": "not found"}, 404)
@@ -1217,7 +1401,8 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, {"authenticated": False, "auth_enabled": _auth_enabled()})
         return _json_response(self, {
             "authenticated": True, "auth_enabled": _auth_enabled(),
-            "username": user.get("username") or "本机模式", "role": user.get("role", "admin"),
+            "username": user.get("username") or "本机模式", "role": user.get("role") or "owner",
+            "apps": _user_apps(user),
         })
 
     def _api_login(self, body: Dict[str, Any]):
@@ -1232,9 +1417,10 @@ class Handler(BaseHTTPRequestHandler):
             return _json_response(self, {"ok": False, "error": "用户名或密码错误"}, 401)
         _audit_log("登录", found["username"], _client_ip(self), True,
                    "角色 " + found["role"])
-        token = _session_create(found["username"], found["role"])
+        token = _session_create(found["username"], found["role"], found.get("apps"))
         days = board_config.session_days(self.board_config_path)
-        body_resp = {"ok": True, "username": found["username"], "role": found["role"]}
+        body_resp = {"ok": True, "username": found["username"], "role": found["role"],
+                     "apps": found.get("apps")}
         body_bytes = json.dumps(body_resp, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1264,7 +1450,7 @@ class Handler(BaseHTTPRequestHandler):
         if not user:
             return "未登录或会话已过期，请先登录"
         if user.get("role") != "owner":
-            # admin 越过了写操作门槛但尝试用户管理：安全告警（owner 账号权限边界被试探）
+            # publisher 越过了写操作门槛但尝试用户管理：安全告警（owner 账号权限边界被试探）
             _security_alert("用户管理越权尝试", user.get("username") or "?",
                             _client_ip(self),
                             f"角色 {user.get('role')} 尝试访问 {urlparse(self.path).path}",
@@ -1276,9 +1462,31 @@ class Handler(BaseHTTPRequestHandler):
         err = self._require_owner()
         if err:
             return _json_response(self, {"ok": False, "error": err}, 403)
-        users = [{"username": u["username"], "role": u["role"]}
+        users = [{"username": u["username"], "role": u["role"], "apps": u.get("apps")}
                  for u in board_config.list_users(self.board_config_path)]
         return _json_response(self, {"ok": True, "users": users})
+
+    def _normalize_user_apps(self, raw: Any) -> Optional[List[str]]:
+        """校验并规范化用户授权应用列表。
+
+        None/缺省 = 全部应用（向后兼容）；列表 = 指定应用（空列表 = 无应用）。
+        列表里出现 catalog 中不存在的 app_id 直接报错，避免配置错字导致权限形同虚设。
+        """
+        if raw is None:
+            return None
+        if not isinstance(raw, list):
+            raise StoreError("apps 必须是应用 id 列表（不传 = 全部应用）")
+        ids = []
+        for a in raw:
+            sid = str(a or "").strip()
+            if sid and sid not in ids:
+                ids.append(sid)
+        if ids:
+            known = {x["id"] for x in self._catalog().all_apps()}
+            unknown = [x for x in ids if x not in known]
+            if unknown:
+                raise StoreError(f"应用不存在：{', '.join(unknown)}")
+        return ids
 
     def _api_users_create(self, body: Dict[str, Any]):
         err = self._require_owner()
@@ -1287,6 +1495,7 @@ class Handler(BaseHTTPRequestHandler):
         username = str(body.get("username") or "").strip()
         password = str(body.get("password") or "")
         role = str(body.get("role") or "").strip().lower()
+        apps = self._normalize_user_apps(body.get("apps"))
         with _user_mgmt_lock:
             users = board_config.list_users(self.board_config_path)
             if not username or len(username) > 32:
@@ -1296,26 +1505,31 @@ class Handler(BaseHTTPRequestHandler):
             if len(password) < 6:
                 raise StoreError("密码至少 6 位")
             if role not in board_config.ROLES:
-                raise StoreError("角色必须是 owner / admin / viewer")
+                raise StoreError("角色必须是 owner / publisher / viewer")
+            if role == "owner":
+                apps = None  # owner 恒为全部应用，不写授权列表以免误读为受限
             users.append({
-                "username": username, "role": role,
+                "username": username, "role": role, "apps": apps,
                 "password_sha256": hashlib.sha256(password.encode("utf-8")).hexdigest(),
             })
             if not board_config.save_users(self.board_config_path, _users_to_save(users)):
                 raise StoreError("写入 board.json 失败（文件权限或磁盘问题）")
         me = _request_user(self) or {}
         _security_alert("新增用户", me.get("username") or "?", _client_ip(self),
-                        f"新增账号 {username}，角色 {role}")
+                        f"新增账号 {username}，角色 {role}"
+                        + ("，应用 全部" if apps is None else f"，应用 {len(apps)} 个：{','.join(apps) or '无'}"))
         return _json_response(self, {"ok": True, "username": username, "role": role})
 
     def _api_users_update(self, body: Dict[str, Any]):
-        """改密码和/或角色（不改用户名）；变更后踢掉该用户现有会话强制重新登录。"""
+        """改密码/角色/授权应用（不改用户名）；变更后踢掉该用户现有会话强制重新登录。"""
         err = self._require_owner()
         if err:
             return _json_response(self, {"ok": False, "error": err}, 403)
         username = str(body.get("username") or "").strip()
         password = str(body.get("password") or "")
         role = str(body.get("role") or "").strip().lower()
+        apps_provided = "apps" in body
+        apps = self._normalize_user_apps(body.get("apps")) if apps_provided else None
         with _user_mgmt_lock:
             users = board_config.list_users(self.board_config_path)
             target = next((u for u in users if u["username"] == username), None)
@@ -1324,12 +1538,15 @@ class Handler(BaseHTTPRequestHandler):
             if password and len(password) < 6:
                 raise StoreError("密码至少 6 位")
             if role and role not in board_config.ROLES:
-                raise StoreError("角色必须是 owner / admin / viewer")
+                raise StoreError("角色必须是 owner / publisher / viewer")
             new_role = role or target["role"]
+            if new_role == "owner":
+                apps = None  # owner 恒为全部应用，清掉历史授权限制
             if target["role"] == "owner" and new_role != "owner" \
                     and sum(1 for u in users if u["role"] == "owner") <= 1:
                 raise StoreError("必须保留至少一个 owner 账号，不能降级最后一个 owner")
             old_role = target["role"]
+            old_apps = target.get("apps")
             changed = []
             if password:
                 target["password_sha256"] = hashlib.sha256(password.encode("utf-8")).hexdigest()
@@ -1337,8 +1554,12 @@ class Handler(BaseHTTPRequestHandler):
             if role and role != old_role:
                 target["role"] = role
                 changed.append(f"角色 {old_role} → {role}")
+            if apps_provided and apps != old_apps:
+                target["apps"] = apps
+                changed.append("应用授权 " + ("全部" if old_apps is None else f"{len(old_apps)} 个")
+                               + " → " + ("全部" if apps is None else (f"{len(apps)} 个：{','.join(apps)}" if apps else "无")))
             if not changed:
-                raise StoreError("没有需要修改的内容（请填写新密码或选择不同角色）")
+                raise StoreError("没有需要修改的内容（请填写新密码、选择不同角色或调整应用授权）")
             if not board_config.save_users(self.board_config_path, _users_to_save(users)):
                 raise StoreError("写入 board.json 失败（文件权限或磁盘问题）")
             _session_drop_by_user(username)
@@ -1380,7 +1601,8 @@ class Handler(BaseHTTPRequestHandler):
             "board_config": self.board_config_path,
             "auth_enabled": _auth_enabled(),
             "username": (user or {}).get("username") or "",
-            "role": (user or {}).get("role") or "admin",
+            "role": (user or {}).get("role") or "owner",
+            "apps": _user_apps(user),
             "feishu": fs_state,
         })
 
@@ -1393,6 +1615,8 @@ class Handler(BaseHTTPRequestHandler):
         app_id = (qs.get("app_id") or [""])[0].strip()
         if not app_id:
             raise StoreError("缺少 app_id")
+        if self._app_denied(app_id):
+            return
         from .share_image import render_status_image
         app = self._catalog().get_app(app_id)
         name = str(app.get("name") or app_id)
@@ -1468,6 +1692,7 @@ class Handler(BaseHTTPRequestHandler):
         app_id = body.get("app_id") or ""
         if not app_id:
             raise StoreError("缺少 app_id")
+        self._require_app_perm(app_id)
         fields = {k: v for k, v in body.items() if k != "app_id"}
         catalog = self._catalog()
         catalog.update_app(app_id, fields)
@@ -1498,6 +1723,7 @@ class Handler(BaseHTTPRequestHandler):
         app_id = body.get("app_id") or ""
         if not app_id:
             raise StoreError("缺少 app_id")
+        self._require_app_perm(app_id)
         app = self._catalog().get_app(app_id)
         package = app.get("package_name") or ""
         if not package:
@@ -1523,6 +1749,8 @@ class Handler(BaseHTTPRequestHandler):
         app_id = (qs.get("app_id") or [""])[0].strip()
         if not app_id:
             raise StoreError("缺少 app_id")
+        if self._app_denied(app_id):
+            return
         data = resolve_app_icon(app_id)
         if data is None:
             raise StoreError(
@@ -1545,6 +1773,8 @@ class Handler(BaseHTTPRequestHandler):
         app_id = (qs.get("app_id") or [""])[0].strip()
         if not app_id:
             raise StoreError("缺少 app_id")
+        if self._app_denied(app_id):
+            return
         app = self._catalog().get_app(app_id)
         package = str(app.get("package_name") or "").strip()
         if not package:
@@ -1630,6 +1860,8 @@ class Handler(BaseHTTPRequestHandler):
             raise StoreError("version_code 必须是整数")
         if not app_id:
             raise StoreError("缺少 app_id")
+        if self._app_denied(app_id):
+            return
         app = self._catalog().get_app(app_id)
         package = str(app.get("package_name") or "").strip()
         if not package:
@@ -1662,14 +1894,23 @@ class Handler(BaseHTTPRequestHandler):
             raise StoreError("version_code 必须是整数")
         if not app_id:
             raise StoreError("缺少 app_id")
+        if self._app_denied(app_id):
+            return
         app = self._catalog().get_app(app_id)
         package = str(app.get("package_name") or "").strip()
         if not package:
             raise StoreError("该应用未配置包名（package_name）")
         # 文件名只允许包名字符（Android 包名规则），防路径注入
         safe_pkg = re.sub(r"[^A-Za-z0-9._-]", "_", package)
-        fname = f"{safe_pkg}-{version_code}.apk"
-        dest = os.path.join(self._downloads_dir(), fname)
+        # 版本名（如 3.6.1）：优先用本地从 APK 清单解析出的真实名称，
+        # 首次下载时用前端从版本列表带过来的 name；只保留安全字符防响应头注入
+        vname = (self._google_cached_version_names().get(package) or {}).get(str(version_code)) or ""
+        if not vname:
+            vname = (qs.get("version_name") or [""])[0]
+        vname = re.sub(r"[^A-Za-z0-9._-]", "", str(vname)).strip("._-")[:40]
+        fname = f"{safe_pkg}-{vname}({version_code}).apk" if vname else f"{safe_pkg}-{version_code}.apk"
+        # 本地缓存路径保持不变（只按 versionCode 命名），改名只影响下载后的文件名
+        dest = os.path.join(self._downloads_dir(), f"{safe_pkg}-{version_code}.apk")
         if not os.path.isfile(dest):
             creds = load_credentials(self.credentials_path)
             if not creds.get("google"):
@@ -1742,6 +1983,10 @@ class Handler(BaseHTTPRequestHandler):
             t = _TASKS.get(tid)
             if t is None:
                 return _json_response(self, {"ok": False, "error": "任务不存在"}, 404)
+            if not _can_app(_request_user(self), str(t.get("app_id") or "")):
+                _audit_log("停止发布", (_request_user(self) or {}).get("username") or "?",
+                           _client_ip(self), False, f"无应用 {t.get('app_id')} 权限，已拒绝停止任务 {tid}")
+                return _json_response(self, {"ok": False, "error": "当前账号没有该应用的权限"}, 403)
             if t.get("status") != "running":
                 return _json_response(self, {"ok": False, "error": "任务已结束，无需停止"}, 400)
             t["kill_req"] = True
@@ -1764,7 +2009,15 @@ class Handler(BaseHTTPRequestHandler):
             raise StoreError(
                 "清空发布历史需要显式确认：请求体传 {\"confirm\": true}；"
                 "执行前会自动备份到 config/tasks_history.json.bak-<时间戳>")
-        # 第二道闸：先备份再删除（防误清不可恢复）
+        # 第二道闸：清空是全库操作，只允许 owner（publisher 只限授权应用，无法只清部分）
+        me = _request_user(self) or {}
+        if me.get("role") != "owner":
+            _audit_log("清空发布历史", me.get("username") or "?", _client_ip(self), False,
+                       "非 owner 尝试清空发布历史，已拒绝")
+            _security_alert("越权清空历史", me.get("username") or "?", _client_ip(self),
+                            "非 owner 尝试清空发布历史", ok=False)
+            raise StoreError("仅 owner 账号可清空发布历史")
+        # 第三道闸：先备份再删除（防误清不可恢复）
         try:
             if os.path.isfile(_HISTORY_FILE):
                 import glob
@@ -1803,8 +2056,16 @@ class Handler(BaseHTTPRequestHandler):
         platform = (body.get("platform") or "all").lower()
         dry_run = bool(body.get("dry_run"))
         version_name = body.get("version_name") or ""
+        me = _request_user(self) or {}
+        _pub_user = me.get("username") or "?"
+        # 应用级权限：越权发布要留审计并告警（可能是账号被盗/试探他人应用）
+        if not _can_app(me, app_id):
+            _audit_log("发布应用", _pub_user, _client_ip(self), False,
+                       f"无应用 {app_id} 权限，已拒绝")
+            _security_alert("发布越权尝试", _pub_user, _client_ip(self),
+                            f"尝试发布未授权应用 {app_id}", ok=False)
+            raise StoreError(f"当前账号没有应用 {app_id} 的发布权限，请联系 owner 授权")
         # 审计日志先记（应用校验失败也能留下"谁在什么时候试图发布什么"）
-        _pub_user = (_request_user(self) or {}).get("username") or "?"
         try:
             _audit_log("发布应用", _pub_user, _client_ip(self), True,
                        f"应用 {app_id} · 平台 {platform} · v{version_name or '?'}"
@@ -1815,6 +2076,24 @@ class Handler(BaseHTTPRequestHandler):
         app = self._catalog().get_app(app_id)
         if app.get("query_only"):
             raise StoreError("应用 {id} 标记为仅查询（query_only），不支持发布操作".format(id=app_id))
+        # 同一应用不允许并发发布（不同应用互不影响）：双开页面/手快连点会重复向
+        # 各平台提交同一版本，必须在任务创建前拦下
+        with _task_lock:
+            dup = [v for v in _TASKS.values()
+                   if v.get("status") == "running" and v.get("app_id") == app_id]
+            all_running = [v for v in _TASKS.values() if v.get("status") == "running"]
+            if dup:
+                started = dup[0].get("steps") and dup[0]["steps"][0][:19] or "?"
+                _dlog("并发拦截", f"拦截同应用重复发布：app={app_id} 操作者={_pub_user}；"
+                      f"已有任务 tid={dup[0].get('id') or '?'} v{dup[0].get('version_name') or '?'} "
+                      f"发起者={dup[0].get('user') or '?'} 起始={started}；"
+                      f"当前全部运行中任务 {len(all_running)} 个（{', '.join((v.get('app_id') or '?') for v in all_running)}）")
+                raise StoreError(
+                    "应用 {id} 已有发布任务进行中（{started} 起，操作者 {user}），"
+                    "请等它结束或先停止，再发起新的发布".format(
+                        id=app_id, started=started, user=dup[0].get("user") or "?"))
+            _dlog("并发拦截", f"校验通过：app={app_id} 操作者={_pub_user} 无同应用运行任务"
+                  f"（其他运行中任务 {len(all_running)} 个：{', '.join((v.get('app_id') or '?') for v in all_running) or '无'}）")
         platform = (body.get("platform") or "all").lower()
         dry_run = bool(body.get("dry_run"))
         version_name = body.get("version_name") or ""
@@ -1877,6 +2156,7 @@ class Handler(BaseHTTPRequestHandler):
         app_id = body.get("app_id") or ""
         if not app_id:
             raise StoreError("缺少 app_id")
+        self._require_app_perm(app_id)
         app = self._catalog().get_app(app_id)
         package = app.get("package_name") or ""
         statuses, errors = query_app_status(app_id, (body.get("platform") or "all").lower())

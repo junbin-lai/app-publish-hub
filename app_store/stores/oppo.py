@@ -253,9 +253,56 @@ class OPPOAdapter(StoreAdapter):
             params["online_type"] = 1
 
         payload = self._request("POST", "/resource/v1/app/upd", data=params, pkg=release.package_name)
-        return SubmitResult(self.platform, True, f"OPPO: {payload.get('errmsg', '提交成功')}",
-                            remote_reference=str(payload.get("data", {}).get("task_id", "")),
+        # 完整记录响应：OPPO 偶发 errno=0 但实际未生成审核任务，靠原文排查
+        print(f"OPPO app/upd 响应: {json.dumps(payload, ensure_ascii=False)[:800]}", file=sys.stderr)
+        task_id = str((payload.get("data") or {}).get("task_id") or "")
+        confirmed = self._confirm_submitted(
+            release.package_name, params.get("version_code"), params.get("version_name"), task_id, scb)
+        if confirmed is False:
+            raise StoreError(
+                "OPPO 提交未被受理：接口返回成功，但现网版本未更新为 "
+                f"{params.get('version_name')}（{params.get('version_code')}）"
+                f"（响应: {json.dumps(payload, ensure_ascii=False)[:300]}）")
+        return SubmitResult(self.platform, True, f"OPPO: {payload.get('errmsg') or '提交成功'}",
+                            remote_reference=task_id,
                             state=AuditState.SUBMITTED, raw=payload)
+
+    _SUBMIT_CONFIRM_TIMEOUT = 180  # 提交后回查窗口（10-20 实测约 2 分钟才生成版本记录）
+    _SUBMIT_CONFIRM_INTERVAL = 10
+
+    def _confirm_submitted(self, pkg: str, version_code: Any, version_name: Any,
+                           task_id: str, scb=None) -> Optional[bool]:
+        """提交后回查 app/info，确认 OPPO 是否真的受理了本次版本。
+
+        返回 True=已确认受理；False=窗口内确认未受理；None=回查失败（无法确认，不当失败处理）。
+        task_id 非空说明已生成任务，直接视为受理。
+        """
+        if task_id:
+            return True
+        want_code = str(version_code or "")
+        want_name = str(version_name or "")
+        if not want_code and not want_name:
+            return None
+        if scb:
+            scb("确认 OPPO 是否受理本次提交…")
+        waited = 0
+        while True:
+            try:
+                data = (self._request("GET", "/resource/v1/app/info",
+                                      data={"pkg_name": pkg}, pkg=pkg).get("data") or {})
+            except Exception as e:
+                print(f"OPPO 提交回查失败（无法确认，按已提交处理）: {e}", file=sys.stderr)
+                return None
+            cur_code = str(data.get("version_code") or "")
+            cur_name = str(data.get("version_name") or "")
+            if (want_code and cur_code == want_code) or (not want_code and want_name and cur_name == want_name):
+                return True
+            if waited >= self._SUBMIT_CONFIRM_TIMEOUT:
+                print(f"OPPO 提交未生效：现网仍为 {cur_name}({cur_code})，本次为 {want_name}({want_code})",
+                      file=sys.stderr)
+                return False
+            time.sleep(self._SUBMIT_CONFIRM_INTERVAL)
+            waited += self._SUBMIT_CONFIRM_INTERVAL
 
     def query_status(self, package_name: str) -> StoreStatus:
         payload = self._request("GET", "/resource/v1/app/info", data={"pkg_name": package_name}, pkg=package_name)

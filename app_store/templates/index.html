@@ -36,6 +36,9 @@ aside .app-item{display:flex;align-items:center;gap:var(--space-2);padding:8px v
 aside .app-item:hover{background:var(--hov)}
 aside .app-item.active{background:var(--acc);color:var(--btn-ink);font-weight:600}
 aside .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+aside .dot.run{background:var(--acc);animation:pulse-icon 1.2s infinite}
+aside .runbadge{margin-left:auto;font-size:10px;line-height:1;padding:3px 7px;border-radius:9px;color:var(--acc);border:1px solid var(--acc);flex-shrink:0;white-space:nowrap}
+aside .app-item.active .runbadge{color:var(--btn-ink);border-color:var(--btn-ink)}
 main{flex:1;overflow-y:auto;padding:var(--space-4) var(--space-5) 40px;background:var(--bg)}
 .app-head{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap}
 .app-head h2{font-size:var(--font-app-name);letter-spacing:-.02em}
@@ -65,6 +68,10 @@ form-row>*{flex:1}
 label{display:block;color:var(--mut);font-size:var(--font-label);margin:var(--space-2) 0 var(--space-1)}
 .check{display:flex;align-items:center;gap:var(--space-2);margin:var(--space-3) 0;font-size:var(--font-body);color:var(--txt)}
 .check input{width:16px;height:16px;accent-color:var(--acc);margin:0}
+/* 授权应用勾选列表：左对齐，复选框固定 16px（全局 input{width:100%} 会把复选框撑满） */
+.app-pick{display:flex;align-items:center;gap:6px;margin:2px 0;font-size:var(--font-body);color:var(--txt);white-space:nowrap}
+.app-pick input{width:16px;height:16px;flex:0 0 auto;accent-color:var(--acc);margin:0}
+.app-pick.indent{margin-left:18px}
 .actions{display:flex;gap:var(--space-2);margin:var(--space-3) 0}
 .status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:var(--space-3)}
 .state{display:inline-block;padding:3px var(--space-2);border-radius:var(--radius-sm);font-size:var(--font-caption);font-weight:600}
@@ -149,12 +156,12 @@ a:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--acc);outline-of
 </div>
 <div id="toast" class="overlay" role="status" aria-live="polite" style="display:none"></div>
 <script>
-var ST={apps:[],cats:[],cur:null,plt:[],POLL:null,l10nNotes:{zh:"",en:""},l10nLang:"zh"};
+var ST={apps:[],cats:[],cur:null,plt:[],POLL:null,POLLAPP:null,RUNNING:{},SHOWNFIN:{},l10nNotes:{zh:"",en:""},l10nLang:"zh"};
 function $(v){return document.getElementById(v)}
 function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 function iconSvg(n){var P={check:'<polyline points="20 6 9 17 4 12"/>',cross:'<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',bolt:'<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',upload:'<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>',warn:'<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',sun:'<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>',moon:'<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>'};return '<svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(P[n]||"")+"</svg>"}
 function api(p,o){return fetch(p,o).then(function(r){if(r.status===401)showLogin();return r.json().catch(function(){return{}})})}
-// ==== 登录/会话（board.json 配置 users 后开启；viewer 只读，admin 可发布） ====
+// ==== 登录/会话（board.json 配置 users 后开启；viewer 只读，publisher 可发布，owner 另可管用户与全部应用） ====
 function showLogin(){if(document.getElementById("loginOverlay"))return;
 var h='<div class="overlay" id="loginOverlay"><div class="modal" style="text-align:center;--modal-min-w:360px">'
 +'<h3 class="section-title" style="margin-bottom:var(--space-3)">App发布中枢</h3>'
@@ -175,22 +182,37 @@ function logout(){api("/api/logout",{method:"POST",headers:{"Content-Type":"appl
 function isAdmin(){return !(ST.ME&&ST.ME.role==="viewer")}
 function renderMeBox(){var m=$("meInfo"),lo=$("logoutBtn"),fs=$("fsInfo"),ub=$("userBtn");if(!m)return;
 var me=ST.ME||{};
-if(me.auth_enabled){m.textContent=(me.username||"?")+" · "+(me.role==="owner"?"Owner":(me.role==="admin"?"管理员":"只读"));lo.classList.remove("hide");if(ub){me.role==="owner"?ub.classList.remove("hide"):ub.classList.add("hide")}}
+if(me.auth_enabled){m.textContent=(me.username||"?")+" · "+roleName(me.role)+(me.role!=="owner"&&me.apps?"（"+(me.apps.length?me.apps.length+" 个应用":"无应用权限")+"）":"");lo.classList.remove("hide");if(ub){me.role==="owner"?ub.classList.remove("hide"):ub.classList.add("hide")}}
 else{m.textContent="";lo.classList.add("hide");if(ub)ub.classList.add("hide")}
 if(fs){var f=ST.FS;if(f&&f.enabled){fs.textContent="飞书"+(f.connected?"已连接":(f.last_error?"异常":"连接中"))+(f.bound_chat?"":"·未绑通知群")}else fs.textContent=""}}
 // ==== 用户管理（仅 owner：增删改账号，密码自动哈希写回 board.json，改密/改角色后对方需重新登录） ====
-function roleName(r){return r==="owner"?"Owner":(r==="admin"?"管理员":"只读")}
-function roleSel(id,cur){return '<select id="'+id+'"><option value="viewer"'+(cur==="viewer"?" selected":"")+'>viewer（只读）</option><option value="admin"'+(cur==="admin"?" selected":"")+'>admin（可发布）</option><option value="owner"'+(cur==="owner"?" selected":"")+'>owner（超级管理员）</option></select>'}
+function roleName(r){return r==="owner"?"Owner":(r==="publisher"?"发布员":"只读")}
+function roleSel(id,cur){return '<select id="'+id+'"><option value="viewer"'+(cur==="viewer"?" selected":"")+'>viewer（只读/查询）</option><option value="publisher"'+(cur==="publisher"?" selected":"")+'>publisher（发布员：可发布授权应用）</option><option value="owner"'+(cur==="owner"?" selected":"")+'>owner（超级管理员：全部应用+用户管理）</option></select>'}
+// 授权应用多选：cur=null/undefined 表示「全部应用」，数组表示指定应用（[] = 无应用）
+function appsTxt(u){var a=u&&u.apps;if(a===null||a===undefined)return "全部应用";if(!a.length)return "无应用";return a.map(function(id){return appName(id)}).join("、")}
+function appPickHtml(prefix,cur){var all=(cur===null||cur===undefined),sel=all?[]:(cur||[]);
+var h='<div style="margin-top:var(--space-2)"><label>授权应用（不勾=无权限；勾「全部应用」= 含以后新增的应用）</label>'
++'<div style="max-height:150px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:var(--space-2)">'
++'<label class="app-pick"><input type="checkbox" id="'+prefix+'All"'+(all?" checked":"")+' onchange="appAllToggle(\''+prefix+'\')"> <b>全部应用</b></label>';
+(ST.apps||[]).forEach(function(a){
+h+='<label class="app-pick indent"><input type="checkbox" class="'+prefix+'App" value="'+esc(a.id)+'"'+(sel.indexOf(a.id)>=0?" checked":"")+(all?" disabled":"")+'> <span>'+esc(a.name||a.id)+'</span></label>'});
+return h+'</div></div>'}
+function appAllToggle(prefix){var all=$(prefix+"All");if(!all)return;
+var box=document.querySelectorAll("."+prefix+"App");for(var i=0;i<box.length;i++){box[i].disabled=all.checked;if(all.checked)box[i].checked=false}}
+function appPickValue(prefix){var all=$(prefix+"All");if(!all||all.checked)return null;
+var out=[],box=document.querySelectorAll("."+prefix+"App");for(var i=0;i<box.length;i++){if(box[i].checked)out.push(box[i].value)}
+return out}
 function showUserModal(){api("/api/users").then(function(r){if(!r||!r.ok){toast((r&&r.error)||"无法获取用户列表","err");return}
 ST.USERS=r.users||[];ST.EDITING=null;
 var h='<div class="overlay" onclick="if(event.target===this)cm()"><div class="modal" style="--modal-min-w:480px">'
-+'<h3 class="section-title" style="margin-bottom:var(--space-3)">用户管理</h3><div id="uList"></div>'
-+'<div style="margin-top:var(--space-4);border-top:1px solid var(--hairline);padding-top:var(--space-3)">'
-+'<div class="eyebrow" style="margin-bottom:var(--space-2)">新增账号</div>'
++'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-3)"><h3 class="section-title" style="margin:0">用户管理</h3><button class="sm" id="nuToggle" onclick="toggleNewUser()">添加账号</button></div>'
++'<div id="uList"></div>'
++'<div id="nuForm" class="hide" style="margin-top:var(--space-2)">'
 +'<div class="input-row"><input id="nuUser" placeholder="用户名" autocomplete="off"></div>'
 +'<div class="input-row"><input id="nuPass" type="password" placeholder="密码（至少 6 位）" autocomplete="new-password"></div>'
 +'<div class="input-row">'+roleSel("nuRole","viewer")+'</div>'
-+'<div style="margin-top:var(--space-2)"><button onclick="userAdd()">新增账号</button></div></div>'
++'<div class="input-row">'+appPickHtml("nuApps",null)+'</div>'
++'<div style="margin-top:var(--space-2)"><button onclick="userAdd()">添加</button></div></div>'
 +'<div style="margin-top:var(--space-3);text-align:right"><button class="secondary" onclick="cm()">关闭</button></div></div></div>';
 var d=document.createElement("div");d.innerHTML=h;document.body.appendChild(d.firstElementChild);
 renderUserList()})}
@@ -200,10 +222,11 @@ h+='<div style="padding:var(--space-2) 0;border-bottom:1px solid var(--line)">'
 +'<div class="row"><span class="k">账号</span><span class="v">'+esc(u.username)+'（当前 '+roleName(u.role)+'）</span></div>'
 +'<div style="margin-top:var(--space-2)"><label>新密码（留空 = 不修改）</label><input id="euPass" type="password" placeholder="至少 6 位" autocomplete="new-password"></div>'
 +'<div style="margin-top:var(--space-2)"><label>角色</label>'+roleSel("euRole",u.role)+'</div>'
++appPickHtml("euApps",u.apps)
 +'<div style="display:flex;gap:var(--space-2);margin-top:var(--space-3)"><button onclick="userSave('+i+')">保存</button><button class="secondary" onclick="userEdit(-1)">取消</button></div></div>'
 }else{
 h+='<div style="display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2) 0;border-bottom:1px solid var(--line)">'
-+'<span style="flex:1">'+esc(u.username)+'</span><span class="badge">'+roleName(u.role)+'</span>'
++'<span style="flex:1">'+esc(u.username)+'<div class="muted" style="font-size:var(--font-caption)">'+esc(appsTxt(u))+'</div></span><span class="badge">'+roleName(u.role)+'</span>'
 +'<button class="secondary sm" onclick="userEdit('+i+')">编辑</button>'
 +'<button class="secondary sm" style="color:var(--err)" onclick="confirmUserDel('+i+')">删除</button></div>'}
 });
@@ -211,13 +234,18 @@ if(!(ST.USERS||[]).length)h+='<div class="muted" style="padding:var(--space-2) 0
 $("uList").innerHTML=h}
 function refreshUsers(){api("/api/users").then(function(r){if(!r||!r.ok)return;ST.USERS=r.users||[];ST.EDITING=null;renderUserList()})}
 function userEdit(i){ST.EDITING=i;renderUserList()}
+// 新增账号默认折叠：点标题栏「添加账号」展开表单，再点「取消」收起
+function toggleNewUser(){var f=$("nuForm"),b=$("nuToggle");if(!f||!b)return;
+var open=f.classList.contains("hide");
+f.classList.toggle("hide",!open);b.textContent=open?"取消":"添加账号";
+if(open){var u=$("nuUser");if(u)u.focus()}}
 function userAdd(){var u=$("nuUser"),p=$("nuPass"),r=$("nuRole");if(!u||!p||!r)return;
 if(!u.value.trim()||!p.value){toast("请填写用户名和密码","err");return}
-api("/api/users",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u.value.trim(),password:p.value,role:r.value})}).then(function(res){
+api("/api/users",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u.value.trim(),password:p.value,role:r.value,apps:appPickValue("nuApps")})}).then(function(res){
 if(!res||!res.ok){toast((res&&res.error)||"新增失败","err");return}
-toast("已新增账号 "+u.value.trim());u.value="";p.value="";refreshUsers()}).catch(function(){toast("网络错误","err")})}
+toast("已新增账号 "+u.value.trim());u.value="";p.value="";refreshUsers();var nf=$("nuForm");if(nf&&!nf.classList.contains("hide"))toggleNewUser()}).catch(function(){toast("网络错误","err")})}
 function userSave(i){var u=(ST.USERS||[])[i];if(!u)return;var p=$("euPass"),r=$("euRole");if(!p||!r)return;
-var body={username:u.username,role:r.value};if(p.value)body.password=p.value;
+var body={username:u.username,role:r.value,apps:appPickValue("euApps")};if(p.value)body.password=p.value;
 api("/api/users/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(res){
 if(!res||!res.ok){toast((res&&res.error)||"保存失败","err");return}
 // 改的是自己的账号：服务端已踢掉当前会话，重新登录后刷新整页
@@ -238,17 +266,46 @@ function setTheme(t){document.documentElement.dataset.theme=t;try{localStorage.s
 function toggleTheme(){setTheme(document.documentElement.dataset.theme==="dark"?"light":"dark")}
 setTheme(function(){try{return localStorage.getItem("dshTheme")||"light"}catch(e){return "light"}}());
 function stat(ch){var m={published:"已上架",reviewing:"审核中",pending:"待发布",draft:"草稿",submitted:"已提交",rejected:"已拒绝",unknown:"未知"};return m[ch]||ch}
-function ld(){Promise.all([api("/api/apps"),api("/api/platforms"),api("/api/config"),api("/api/tasks"),api("/api/session")]).then(function(rs){ST.apps=rs[0].apps||[];ST.cats=rs[0].categories||[];ST.platforms=rs[1]||[];$("cfg").textContent="凭证: "+(rs[2].credentials||"");ST.FS=(rs[2]&&rs[2].feishu)||null;ST.ME={username:rs[4]&&rs[4].username,role:rs[4]&&rs[4].role,auth_enabled:!!(rs[4]&&rs[4].auth_enabled)};renderMeBox();ST.HIST=(rs[3]&&rs[3].history)||[];renderSb();if(ST.apps.length){if(!ST.cur||!ST.apps.find(function(a){return a.id===ST.cur.id}))sa(ST.apps[0].id);else{renderMain();renderHistory(appHistory(5))}}
+function ld(){Promise.all([api("/api/apps"),api("/api/platforms"),api("/api/config"),api("/api/tasks"),api("/api/session")]).then(function(rs){ST.apps=rs[0].apps||[];ST.cats=rs[0].categories||[];ST.platforms=rs[1]||[];$("cfg").textContent="凭证: "+(rs[2].credentials||"");ST.FS=(rs[2]&&rs[2].feishu)||null;ST.ME={username:rs[4]&&rs[4].username,role:rs[4]&&rs[4].role,apps:(rs[4]&&rs[4].apps!==undefined)?rs[4].apps:null,auth_enabled:!!(rs[4]&&rs[4].auth_enabled)};renderMeBox();ST.HIST=(rs[3]&&rs[3].history)||[];renderSb();if(ST.apps.length){if(!ST.cur||!ST.apps.find(function(a){return a.id===ST.cur.id}))sa(ST.apps[0].id);else{renderMain();renderHistory(appHistory(5))}}
 // === 恢复进行中的发布任务：发布在服务端后台线程运行，刷新/关闭重进页面都不影响。
-// 页面加载时若存在 running 任务，自动切到该应用并继续显示进度，任务结束后自动停止。
-// 多个任务同时进行时先显示最后提交的，结束后自动接显下一个（终态后自动衔接）。===
+// 页面加载时若存在 running 任务，自动切到该应用并继续显示进度。
+// 多应用并行发布：各应用任务相互独立（后端同应用并发有拦截），侧栏带「运行中」角标。===
 var run=(rs[3]&&rs[3].running)||[];
+// 已存在于历史里的结束任务视为“已看过”：ST.HIST 按最新在前排列，每个 app 只记
+// 首次出现（即该应用最新一条），避免 forEach 覆盖到最旧导致切换应用时误报
+(ST.HIST||[]).forEach(function(t){if(t.app_id&&t.id&&!(t.app_id in ST.SHOWNFIN))ST.SHOWNFIN[t.app_id]=t.id});
+run.forEach(function(r){if(r.app_id)ST.RUNNING[r.app_id]=r});
+renderSb();
 if(run.length){var rt=run[run.length-1];
 if(rt.app_id&&ST.apps.find(function(a){return a.id===rt.app_id})){sa(rt.app_id)}
-startPoll(rt.id);busy(true);
-if(run.length>1){lg("（另有 "+(run.length-1)+" 个任务同时在发布中，结束后会自动接着显示）","")}}}).catch(function(e){console.error(e)})}
-function renderSb(){var h="";(ST.cats||[]).forEach(function(c){h+='<div class=cat-title>'+esc(c.name)+"</div>";(ST.apps||[]).filter(function(a){return a.category===c.name}).forEach(function(a){var act=ST.cur&&ST.cur.id===a.id?"active":"";var dot=a.package_name?'<span class=dot style=background:var(--ok)></span>':'<span class=dot style=background:var(--warn)></span>';h+='<div class="app-item '+act+'" role="button" tabindex="0" aria-current="'+(act?"true":"false")+'" data-id="'+esc(a.id)+'" onclick="sa(this.dataset.id)">'+dot+'<span>'+esc(a.name)+"</span></div>"})});$("sb").innerHTML=h}
-function sa(id){ST.cur=(ST.apps||[]).find(function(a){return a.id===id})||null;ST.statuses=null;ST.GB=null;ST.GBSEL=null;var _sb=$("shareBtn");if(_sb)_sb.classList.add("hide");var _sg=$("sg");if(_sg)_sg.innerHTML="";var _ss=$("sgSection");if(_ss)_ss.style.display="none";renderSb();renderMain();renderHistory(appHistory(5))}
+else{startPoll(rt.id,rt.app_id)}
+if(run.length>1){lg("（另有 "+(run.length-1)+" 个应用同时在发布中，可从左侧切换查看，侧栏有「运行中」标记）","")}}
+// 定期刷新运行中任务（轻量接口）：更新侧栏角标；当前应用的任务若是他处新发起且面板空闲（未在显示任何进度），自动接上
+setInterval(function(){refreshRunning(function(){var c=ST.cur&&ST.cur.id,r=ST.RUNNING[c];
+if(r&&r.id&&!ST.POLL&&ST.POLLAPP!==c){dlog("定时器: 检测到当前应用 "+c+" 有别处发起的任务 "+r.id+"，面板空闲 → 自动接上");startPoll(r.id,c)}})},5000);
+}).catch(function(e){console.error(e)})}
+function refreshRunning(cb){api("/api/tasks?light=1").then(function(tr){var run=(tr&&tr.running)||[];var m={};run.forEach(function(r){if(r.app_id)m[r.app_id]=r});
+var prev=Object.keys(ST.RUNNING||{}).sort().join(","),now=Object.keys(m).sort().join(",");
+if(prev!==now){dlog("refreshRunning: 运行中应用集合变化 ["+(prev||"空")+"] → ["+(now||"空")+"]，角标已更新")}
+// 结束检测：上一轮还在运行、本轮消失的任务 → 拉全量历史按服务端真实结果补一条通知
+// （正在看着该任务的用户由 poll() 打详细总结并标记 SHOWNFIN，这里不会重复）
+var gone=[];Object.keys(ST.RUNNING||{}).forEach(function(aid){var old=ST.RUNNING[aid];if(old&&old.id&&!m[aid])gone.push(old.id)});
+ST.RUNNING=m;renderSb();
+if(gone.length){api("/api/tasks").then(function(tr2){ST.HIST=(tr2&&tr2.history)||[];renderHistory(appHistory(5));
+(ST.HIST||[]).forEach(function(t){if(t&&t.id&&gone.indexOf(t.id)>=0&&(!t.app_id||ST.SHOWNFIN[t.app_id]!==t.id)){if(t.app_id)ST.SHOWNFIN[t.app_id]=t.id;dlog("结束检测: ["+appName(t.app_id)+"] 任务 "+t.id+" 结束（"+finLabel(t)+"）→ 日志补通知");lg("["+appName(t.app_id)+"] 刚才的发布已结束（"+finLabel(t)+"），详见发布历史",t.status==="done"?"ok":"err")}})})}
+if(cb)cb(run)}).catch(function(){if(cb)cb([])})}
+function appName(id){var a=(ST.apps||[]).find(function(z){return z.id===id});return a?a.name:id}
+function finLabel(t){if(!t)return "未知";if(t.status==="killed")return "已停止";var isOk=t.status==="done"&&!((t.errors||[]).length)&&!((t.results||[]).some(function(v){return !v.ok}));return isOk?"成功":"有错误"}
+function renderSb(){var h="";(ST.cats||[]).forEach(function(c){h+='<div class=cat-title>'+esc(c.name)+"</div>";(ST.apps||[]).filter(function(a){return a.category===c.name}).forEach(function(a){var act=ST.cur&&ST.cur.id===a.id?"active":"";var run=ST.RUNNING[a.id];var dot=run?'<span class="dot run"></span>':(a.package_name?'<span class=dot style=background:var(--ok)></span>':'<span class=dot style=background:var(--warn)></span>');var badge=run?'<span class="runbadge" title="发布进行中：v'+esc(run.version_name||"?")+'">运行中</span>':'';h+='<div class="app-item '+act+'" role="button" tabindex="0" aria-current="'+(act?"true":"false")+'" data-id="'+esc(a.id)+'" onclick="sa(this.dataset.id)">'+dot+'<span>'+esc(a.name)+"</span>"+badge+"</div>"})});$("sb").innerHTML=h}
+function sa(id){dlog("sa: 切换应用 → "+id+"（原应用="+(ST.cur&&ST.cur.id||"无")+"）");ST.cur=(ST.apps||[]).find(function(a){return a.id===id})||null;ST.statuses=null;ST.GB=null;ST.GBSEL=null;var _sb=$("shareBtn");if(_sb)_sb.classList.add("hide");var _sg=$("sg");if(_sg)_sg.innerHTML="";var _ss=$("sgSection");if(_ss)_ss.style.display="none";renderSb();renderMain();renderHistory(appHistory(5));
+// 切换应用后进度面板跟随当前应用：该应用有 running 任务就恢复显示，否则收起（其他应用的任务不受影响）
+resumePanel()}
+function resumePanel(){var c=ST.cur&&ST.cur.id;if(!c){dlog("resumePanel: 无当前应用 → 收起");stopPoll();return}
+var r=ST.RUNNING[c];
+if(r&&r.id){if(ST.POLL===r.id){dlog("resumePanel: app="+c+" 任务 "+r.id+" 已在显示中，无需处理");return}dlog("resumePanel: app="+c+" 有 running 任务 "+r.id+"（v"+(r.version_name||"?")+"）→ 恢复进度显示");startPoll(r.id,c);return}
+if(ST.POLLAPP&&ST.POLLAPP!==c){dlog("resumePanel: app="+c+" 无 running 任务，面板显示的是 "+ST.POLLAPP+" 的内容 → 收起");stopPoll()}
+// 结束通知统一由 5s 结束检测（服务端真实数据）负责，这里不再用本地陈旧历史判断，避免误报
+}
 function renderMain(){if(!ST.platforms&&!ST.apps.length){setTimeout(renderMain,250);return}var a=ST.cur;if(!a){$("appc").innerHTML='<div class=muted>请选择左侧应用</div>';return}ST.l10nNotes={zh:"",en:""};ST.l10nLang="zh";
 var h='<div class=app-head><h2>'+esc(a.name)+'</h2>'+(a.category_display?'<span class=badge>'+esc(a.category_display)+'</span>':'')+(a.package_name?'<span class="badge" style=color:var(--ok)>'+esc(a.package_name)+'</span>':'<span class="badge err">未配包名</span>')+"</div>";
 var admin=isAdmin();
@@ -267,7 +324,7 @@ h+='<div class=card><h3>发布</h3>'+
 '<div><label for="ipv">轨道（Google）</label><select id="ipv"><option>production</option><option>beta</option><option>alpha</option><option>internal</option></select></div>'+'<div><label for="iprm">Google 发布方式</label><select id="iprm"><option value="staged" selected>分阶段发布（审核通过后先放百万分之一，再手动全量）</option><option value="full">全量发布（审核通过后自动 100% 上线）</option></select></div>'+
 '<div><label for="ipn">更新说明</label><div class="l10n-tabs"><button type="button" class="sm secondary l10n-tab active" id="tabZh" onclick="swL10n(\'zh\')">中文</button><button type="button" class="sm secondary l10n-tab" id="tabEn" onclick="swL10n(\'en\')">English</button></div><textarea id="ipn" rows="2" placeholder="更新说明（中文）"></textarea><div class="form-group"><label for="pot">定时上线（留空=立即）</label><input id="pot" type="datetime-local"></div></div>'+
 '<div class=check><input type=checkbox id=ipdry checked><label for=ipdry>仅校验（不送审）</label> <input type="checkbox" id="ipauto" checked style="margin-left:var(--space-3)"><label for=ipauto>Google 自动送审</label></div>'+
-'<div class=actions>'+(a.query_only?'<button class=secondary disabled title="仅查询应用不支持发布">发布于 AGC 控制台</button>':(admin?'<button onclick=dpub()>发布</button>':'<button disabled title="只读账号（viewer）不可发布，需 admin 登录">发布（只读账号不可用）</button>'))+'</div></div>'+
+'<div class=actions>'+(a.query_only?'<button class=secondary disabled title="仅查询应用不支持发布">发布于 AGC 控制台</button>':(admin?'<button onclick=dpub()>发布</button>':'<button disabled title="只读账号（viewer）不可发布，需 publisher（发布员）登录">发布（只读账号不可用）</button>'))+'</div></div>'+
 '<div class="card"><h3>平台状态</h3>'+
 '<div><label>查询平台（可多选）</label><div id="spp" style="display:flex;flex-wrap:wrap;gap:var(--space-2)">'+statusPlatsHTML()+'</div></div>'+
 '<div class="row-between" style="margin-top:var(--space-2)"><span><button type="button" class="sm secondary" onclick="statusPlatAll(1)">全选</button> <button type="button" class="sm secondary" onclick="statusPlatAll(0)">清空</button></span><button onclick="ds()">查询状态</button></div></div>'+
@@ -326,11 +383,13 @@ var plats=selPlats(),plist=plats==="all"?[]:plats.split(",").map(function(s){ret
 var needAab=plats==="all"||plist.indexOf("google")>=0;
 var needApk=plats==="all"||plist.some(function(p){return ["huawei","oppo","vivo","xiaomi","honor","qq"].indexOf(p)>=0});
 var body={app_id:a.id,platform:plats,dry_run:$("ipdry").checked,auto_review:$("ipauto").checked,release_mode:$("iprm").value,version_name:$("ipvn").value.trim(),version_code:parseInt($("ipvc").value)||null,release_notes:zhNotes,release_notes_l10n:l10n,track:$("ipv").value,aab_path:(needAab?(ab_in||a.aab_build||""):""),apk_path:(needApk?(ap_in||a.apk_build||""):""),online_time:document.getElementById("pot")?document.getElementById("pot").value.trim():""};
-lg("== "+(body.dry_run?"Dry-run":"正式")+"发布 "+(a.name||a.id)+" ==");busy(true);api("/api/publish",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(r){if(r.task_id){lg("任务: "+r.task_id);startPoll(r.task_id)}else{lg("启动失败: "+JSON.stringify(r),"err");busy(false)}})}
+// 不再全局 busy(true) 锁页面：多应用可并行发布，切到其他应用立即可操作；
+// 同应用重复发布由服务端拦截并返回明确错误
+lg("== "+(body.dry_run?"Dry-run":"正式")+"发布 "+(a.name||a.id)+" ==");api("/api/publish",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(r){if(r.task_id){lg("任务: "+r.task_id);dlog("publish: 启动成功 tid="+r.task_id+" app="+a.id+" → 记入 RUNNING 并开始轮询");ST.RUNNING[a.id]={id:r.task_id,app_id:a.id,version_name:body.version_name||""};renderSb();startPoll(r.task_id,a.id)}else{dlog("publish: 启动失败 app="+a.id+" 响应="+JSON.stringify(r).slice(0,200));lg("启动失败: "+JSON.stringify(r),"err")}})}
 function renderTask(t){ST.LASTT=t;
 var stopBtn=$("tstop");if(stopBtn)stopBtn.style.display=((t.status==="running")&&isAdmin())?"":"none";
 var a=(ST.apps||[]).find(function(z){return z.id===t.app_id})||{};
-$("tinfo").innerHTML=esc(a.name||t.app_id)+" → "+esc(t.platform)+(t.dry_run?" "+iconSvg("bolt")+"dry-run":"");
+$("tinfo").innerHTML=esc(a.name||t.app_id)+" → "+esc(t.platform)+(t.version_name?" v"+esc(t.version_name):"")+(t.dry_run?" "+iconSvg("bolt")+"dry-run":"");
 // === 平台芯片：点击切换查看对应平台详情（选中加阴影边框）；✓完成/✗失败/⚡进行中 ===
 var doneMap={},errMap={};(t.results||[]).forEach(function(v){doneMap[v.platform]=v});
 (t.errors||[]).forEach(function(v){errMap[v.platform]=v});
@@ -385,26 +444,23 @@ se.innerHTML=sl.map(function(s,i){var st;
   var icon=st==="ok"?iconSvg("check"):st==="err"?iconSvg("cross"):iconSvg("bolt");
   return '<div><span class="icon '+st+'" aria-hidden="true">'+icon+'</span>'+esc(s)+"</div>"
 }).join("");se.scrollTop=se.scrollHeight}
-function startPoll(tid){ST.POLL=tid;ST.TSEL="";ST.LASTT=null;ST.MCLOSE=false;$("progress").classList.remove("hide");$("tsteps").innerHTML="";$("tup").textContent="";poll()}
+function dlog(){try{console.log.apply(console,["[dash]"].concat([].slice.call(arguments)))}catch(e){}}
+function startPoll(tid,app){ST.POLLSEQ=(ST.POLLSEQ||0)+1;dlog("startPoll: tid="+tid+" app="+(app||ST.POLLAPP||"?")+" gen="+ST.POLLSEQ+"（旧 tid="+(ST.POLL||"无")+" 旧 app="+(ST.POLLAPP||"无")+"）");ST.POLL=tid;ST.POLLAPP=app||ST.POLLAPP;ST.TSEL="";ST.LASTT=null;ST.MCLOSE=false;$("progress").classList.remove("hide");$("tsteps").innerHTML="";$("tup").textContent="";poll()}
 function selTPlat(p){ST.TSEL=(ST.TSEL===p?"":p);if(ST.LASTT)renderTask(ST.LASTT)}
-function poll(){if(!ST.POLL)return;api("/api/tasks/"+ST.POLL).then(function(t){if(t.error){lg("查询失败","err");stopPoll();return}
+function poll(){if(!ST.POLL){dlog("poll: 退出（无活动任务）");return}var my=ST.POLLSEQ;api("/api/tasks/"+ST.POLL).then(function(t){if(my!==ST.POLLSEQ){dlog("poll: 轮询代际过期丢弃 gen="+my+" 当前="+(ST.POLLSEQ||0)+"（已切换到其他任务/应用）");return}
+if(t.error){lg("查询失败","err");dlog("poll: 查询失败 tid="+ST.POLL+" → 停止轮询");stopPoll();return}
 renderTask(t)
-// === 任务结束：日志 + 手动关闭 × ===
-if(t.status==="done"||t.status==="error"||t.status==="killed"){ST.POLL=null;var stopped=t.status==="killed";var isOk=t.status==="done"&&!(t.errors||[]).length&&!(t.results||[]).some(function(v){return !v.ok});
+// === 任务结束：日志 + 手动关闭 ×（多应用并行时其他应用的任务不受影响） ===
+if(t.status==="done"||t.status==="error"||t.status==="killed"){var finTid=ST.POLL,finApp=ST.POLLAPP;ST.POLL=null;dlog("poll: 任务结束 tid="+finTid+" app="+(finApp||"?")+" status="+t.status+" → 面板保留终态，等待关闭");var stopped=t.status==="killed";var isOk=t.status==="done"&&!(t.errors||[]).length&&!(t.results||[]).some(function(v){return !v.ok});
 $("tclose").style.display="inline-block";$("tclose").onclick=function(){ST.MCLOSE=true;stopPoll()};
 lg("== "+(stopped?"✓ 发布已停止":(isOk?"✓ 发布成功":"✗ 发布有错误"))+" ==",stopped||isOk?"ok":"err");
 (t.results||[]).forEach(function(v){lg("["+v.platform+"] "+(v.ok?"✓ ":"✗ ")+v.message,v.ok?"ok":"err")});
 (t.errors||[]).forEach(function(v){lg("["+v.platform+"] 错误:"+v.error,"err")});
-// 任务结束：刷新发布历史显示（后端已落盘，此处重新拉取展示）；
-// 若还有其他进行中任务且用户没手动关掉进度面板 → 自动接显下一个
-api("/api/tasks").then(function(tr){ST.HIST=(tr&&tr.history)||[];renderHistory(appHistory(5));
-var more=(tr&&tr.running)||[];
-if(more.length&&!ST.MCLOSE){var nt=more[more.length-1];
-if(nt.app_id&&ST.apps.find(function(a){return a.id===nt.app_id})){sa(nt.app_id)}
-startPoll(nt.id);lg("（接续显示下一个进行中的任务）","");busy(true)}});
-busy(false)}
-else{$("tclose").style.display="none";setTimeout(poll,600)}}).catch(function(){setTimeout(poll,1500)})}
-function stopPoll(){ST.POLL=null;$("tclose").style.display="none";var sb=$("tstop");if(sb)sb.style.display="none";$("progress").classList.add("hide")}
+ST.SHOWNFIN[finApp]=finTid;
+// 刷新历史与运行中列表（更新侧栏角标）；不再跨应用自动接续——每个应用独立
+api("/api/tasks").then(function(tr){ST.HIST=(tr&&tr.history)||[];var run=(tr&&tr.running)||[];var m={};run.forEach(function(r){if(r.app_id)m[r.app_id]=r});ST.RUNNING=m;dlog("poll结束刷新: running="+Object.keys(m).join(",")+"（"+run.length+" 个）角标已更新");renderSb();renderHistory(appHistory(5))})}
+else{$("tclose").style.display="none";setTimeout(function(){if(my===ST.POLLSEQ)poll()},600)}}).catch(function(){if(my===ST.POLLSEQ)setTimeout(poll,1500)})}
+function stopPoll(){dlog("stopPoll: 收起面板（tid="+(ST.POLL||"无")+" app="+(ST.POLLAPP||"无")+"）");ST.POLL=null;ST.POLLAPP=null;$("tclose").style.display="none";var sb=$("tstop");if(sb)sb.style.display="none";$("progress").classList.add("hide")}
 function confirmStopTask(){var h='<div class="overlay" onclick="if(event.target===this)clh()"><div class="modal" style="text-align:center;--modal-min-w:340px"><p style="margin:var(--space-2) 0 var(--space-3);font-size:var(--font-title);font-weight:600">停止发布</p><p style="color:var(--mut);font-size:var(--font-body);margin-bottom:var(--space-5)">确定停止当前发布任务？未完成的上传将被放弃，已完成的平台保持现状，不会有新的提交。</p><div style="display:flex;gap:var(--space-2);justify-content:center"><button onclick="stopTask()" style="background:var(--err)">停止</button><button class="secondary" onclick="clh()">取消</button></div></div></div>';var d=document.createElement("div");d.innerHTML=h;document.body.appendChild(d.firstElementChild)}
 function stopTask(){clh();var tid=ST.POLL;if(!tid){toast("当前没有进行中的任务","err");return}
 lg("== 停止发布任务 ==");api("/api/tasks/stop",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task_id:tid})}).then(function(r){if(r&&r.ok){lg("已请求停止，正在中断各平台…","ok")}else{lg("停止失败: "+((r&&r.error)||"未知错误"),"err")}}).catch(function(){lg("停止请求发送失败","err")})}
@@ -546,7 +602,7 @@ function renderGSel(){var e=$("gsel");if(!e)return;var s=ST.GBSEL;if(!s){e.inner
 e.innerHTML='<div class=row><span class=k>版本</span><span class=v>'+esc(s.version_name||"—")+'（versionCode '+s.version_code+'）</span></div>'
 +'<div class=row><span class=k>发布状态</span><span class=v>'+esc(s.release_status||"—")+'</span></div>'
 +'<div style="margin-top:var(--space-2)"><button onclick="dapk()">下载签名 APK</button><span class="muted" style="font-size:var(--font-caption);margin-left:var(--space-2)">下载由浏览器接管</span></div>'}
-function dapk(){var a=ST.cur,s=ST.GBSEL;if(!a||!s)return;var label=(s.version_name||s.version_code);lg("== 从 Google Play 下载签名 APK: "+label+"（versionCode "+s.version_code+"） ==");var q="app_id="+encodeURIComponent(a.id)+"&version_code="+encodeURIComponent(s.version_code);var u="/api/google/apk?"+q,cu="/api/google/apk/check?"+q;toast("正在检查该版本 APK 是否已就绪…");api(cu).then(function(r){if(!r.ok){var em=r.error||"APK 尚未就绪，请稍后重试";lg("下载预检失败: "+em,"err");toast(em,"err");return}var mb=r.size?("（"+(r.size/1048576).toFixed(1)+" MB"+(r.cached?" · 本地缓存":"")+"）"):"";lg("预检通过，APK 已就绪"+mb+"，开始下载"+(r.cached?"":"（首次从 Google 实时拉取，速度取决于 VPN）"),"ok");
+function dapk(){var a=ST.cur,s=ST.GBSEL;if(!a||!s)return;var label=(s.version_name||s.version_code);lg("== 从 Google Play 下载签名 APK: "+label+"（versionCode "+s.version_code+"） ==");var q="app_id="+encodeURIComponent(a.id)+"&version_code="+encodeURIComponent(s.version_code)+"&version_name="+encodeURIComponent(s.version_name||"");var u="/api/google/apk?"+q,cu="/api/google/apk/check?"+q;toast("正在检查该版本 APK 是否已就绪…");api(cu).then(function(r){if(!r.ok){var em=r.error||"APK 尚未就绪，请稍后重试";lg("下载预检失败: "+em,"err");toast(em,"err");return}var mb=r.size?("（"+(r.size/1048576).toFixed(1)+" MB"+(r.cached?" · 本地缓存":"")+"）"):"";lg("预检通过，APK 已就绪"+mb+"，开始下载"+(r.cached?"":"（首次从 Google 实时拉取，速度取决于 VPN）"),"ok");
 // 隐藏 iframe 触发下载：fetch 回调里已无用户点击手势，<a target=_blank>.click() 会被
 // 浏览器弹窗拦截器吞掉（表现为 toast 提示已下载但下载列表无反应）；iframe 加载
 // Content-Disposition: attachment 响应会直接进入下载列表，不弹新页、不被拦截

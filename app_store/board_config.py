@@ -4,8 +4,10 @@
 
 {
   "users": [
-    {"username": "laijunbin", "password": "改成你的密码", "role": "admin"},
-    {"username": "xiaowang",  "password": "改成同事的密码", "role": "viewer"}
+    {"username": "laijunbin", "password": "改成你的密码", "role": "owner"},
+    {"username": "xiaowang",  "password": "改成同事的密码", "role": "publisher",
+     "apps": ["kaadas-smart"]},
+    {"username": "guest", "password": "改成密码", "role": "viewer"}
   ],
   "session_days": 14,
   "feishu": {
@@ -16,7 +18,10 @@
   }
 }
 
-- users 非空 = 开启登录鉴权；role 三种：owner（超级管理员，可管理用户账号）/ admin（可发布）/ viewer（只读+查询）
+- users 非空 = 开启登录鉴权；role 三种：owner（超级管理员，全部应用+用户管理）/
+  publisher（发布员，可发布） / viewer（只读+查询）
+- apps 可选：授权应用 id 列表。缺省该键 = 全部应用（向后兼容）；空列表 [] = 无任何应用；
+  owner 恒为全部应用。publisher / viewer 的可见与可发布范围都受 apps 限制。
 - feishu 段缺省时飞书功能整体关闭，不影响看板其他功能
 - 每次请求都重新读盘，改配置无需重启（飞书长连接除外，需重启生效）
 """
@@ -30,7 +35,9 @@ from typing import Any, Dict, List, Optional
 
 _LOCK = threading.Lock()
 
-ROLES = ("owner", "admin", "viewer")
+# 按能力命名：owner 管全部与账号；publisher 可发布；viewer 只读
+ROLES = ("owner", "publisher", "viewer")
+_LEGACY_ROLES = {"admin": "publisher"}  # 旧配置的角色名兼容映射
 
 
 def _read_json(path: str) -> Dict[str, Any]:
@@ -49,8 +56,13 @@ def load_board_config(path: str) -> Dict[str, Any]:
     return _read_json(path)
 
 
-def list_users(path: str) -> List[Dict[str, str]]:
-    """返回 [{"username","password","password_sha256","role"}]；users 为空列表 = 未开启鉴权。"""
+def list_users(path: str) -> List[Dict[str, Any]]:
+    """返回 [{"username","password","password_sha256","role","apps"}]；
+    users 为空列表 = 未开启鉴权。
+
+    apps：None = 全部应用（键缺省，向后兼容）；[] = 无应用；否则为授权应用 id 列表。
+    旧角色名 admin 自动映射为 publisher。
+    """
     cfg = load_board_config(path)
     users = cfg.get("users")
     if not isinstance(users, list):
@@ -63,12 +75,18 @@ def list_users(path: str) -> List[Dict[str, str]]:
         if not name:
             continue
         role = str(u.get("role") or "").strip().lower()
+        role = _LEGACY_ROLES.get(role, role)
+        apps = None
+        if "apps" in u:
+            raw = u.get("apps")
+            apps = [str(a).strip() for a in raw if str(a).strip()] if isinstance(raw, list) else []
         out.append({
             "username": name,
             "password": str(u.get("password") or ""),
             "password_sha256": str(u.get("password_sha256") or ""),
             # 未知角色一律按最低权限 viewer 处理
             "role": role if role in ROLES else "viewer",
+            "apps": apps,
         })
     return out
 
@@ -88,8 +106,40 @@ def session_days(path: str) -> int:
     return max(1, min(365, days))
 
 
-def check_login(path: str, username: str, password: str) -> Optional[Dict[str, str]]:
-    """校验用户名/密码；成功返回 {"username","role"}，失败返回 None。
+def upload_concurrency(path: str) -> int:
+    """全局上传并发上限（跨任务/跨应用共享的进程级闸）。
+
+    多应用并行发布时，若所有平台同时上传 200MB 级安装包会把上行带宽打满，
+    导致 TLS 建连超时 / 连接重置（历史上荣耀 iam、华为 app-submit、
+    应用宝上传的失败均与此相关）。默认限 2 路，board.json 可用
+    "upload_concurrency": N 覆盖（1=完全串行，2~3 通常最稳）。
+    """
+    cfg = load_board_config(path)
+    try:
+        n = int(cfg.get("upload_concurrency") or 2)
+    except (TypeError, ValueError):
+        n = 2
+    return max(1, min(6, n))
+
+
+def history_retention_days(path: str) -> int:
+    """发布历史保留天数（默认 60 天）。超过该天数的记录在落盘时丢弃。
+
+    board.json 顶层 "history_retention_days": N 可调；配 0 表示不按时间清理，
+    只受条数上限约束。上限 3650 天（10 年）防误配成极大值。
+    """
+    cfg = load_board_config(path)
+    try:
+        days = int(cfg.get("history_retention_days", 60))
+    except (TypeError, ValueError):
+        days = 60
+    if days <= 0:
+        return 0
+    return min(days, 3650)
+
+
+def check_login(path: str, username: str, password: str) -> Optional[Dict[str, Any]]:
+    """校验用户名/密码；成功返回 {"username","role","apps"}，失败返回 None。
 
     password_sha256 存在时优先校验哈希（sha256(明文)），否则比对明文。
     """
@@ -102,7 +152,7 @@ def check_login(path: str, username: str, password: str) -> Optional[Dict[str, s
         else:
             ok = bool(password) and u["password"] == password
         if ok:
-            return {"username": u["username"], "role": u["role"]}
+            return {"username": u["username"], "role": u["role"], "apps": u.get("apps")}
         return None  # 用户名对了密码不对，直接失败（不继续匹配同名用户）
     return None
 
@@ -160,7 +210,7 @@ def save_feishu_fields(path: str, fields: Dict[str, Any]) -> bool:
             return False
 
 
-def save_users(path: str, users: List[Dict[str, str]]) -> bool:
+def save_users(path: str, users: List[Dict[str, Any]]) -> bool:
     """整体替换 board.json 的 users 段（原子写，保留 feishu/session_days 等其余配置）。
 
     供用户管理页面增删改账号使用；users 内的密码只写 password_sha256（哈希），
