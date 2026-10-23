@@ -15,6 +15,8 @@ CREDENTIALS=config/credentials.json
 CATALOG=apps/catalog.json
 BOARD=config/board.json
 LOG=tmpdoc/web-8090.log
+LOG_KEEP_DAYS=60          # 服务日志只保留 60 天，超期归档删除（发布历史不受影响）
+LOG_MAX_MB=50             # 单文件超过 50MB 就在下次启动时归档重置
 
 if [ ! -x .venv/bin/appstore ]; then
   echo "未找到 .venv（首次部署请先执行："
@@ -30,12 +32,29 @@ lan_ip() {
   ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo ""
 }
 
+# 服务日志轮转：只保留最近 LOG_KEEP_DAYS 天
+#   - 当前日志超过 LOG_MAX_MB，或文件已 60 天没更新 → 归档成 web-8090-YYYYmmdd-HHMMSS.log
+#   - 归档文件超过 60 天直接删除
+# 发布历史（config/tasks_history.json）不受影响，永久保留
+rotate_log() {
+  mkdir -p tmpdoc
+  if [ -f "$LOG" ]; then
+    local size
+    size=$(stat -f%z "$LOG" 2>/dev/null || echo 0)
+    if [ "$size" -gt $((LOG_MAX_MB * 1024 * 1024)) ] || [ -n "$(find "$LOG" -mtime +$LOG_KEEP_DAYS -print 2>/dev/null)" ]; then
+      local archived="tmpdoc/web-8090-$(date +%Y%m%d-%H%M%S).log"
+      mv "$LOG" "$archived" && echo "日志已归档: $archived"
+    fi
+  fi
+  find tmpdoc -maxdepth 1 -name 'web-8090-*.log' -mtime +$LOG_KEEP_DAYS -delete 2>/dev/null
+}
+
 # 局域网模式安全闸：没有登录账号就拒绝启动（看板能执行真实发布，不能裸奔在网内）
 check_lan_auth() {
   if ! .venv/bin/python -c "import json,sys;cfg=json.load(open('$BOARD'));users=cfg.get('users') or [];sys.exit(0 if any(isinstance(u,dict) and u.get('username') and (u.get('password') or u.get('password_sha256')) for u in users) else 1)" 2>/dev/null; then
     echo "✘ 局域网模式需要先配置登录账号："
     echo "  1. cp config/example.board.json config/board.json"
-    echo "  2. 编辑 users（admin=可发布 / viewer=只读），说明见 docs/WEB_GUIDE.md"
+    echo "  2. 编辑 users（owner=全部应用 / publisher=发布员 / viewer=只读），说明见 docs/WEB_GUIDE.md"
     exit 1
   fi
 }
@@ -63,6 +82,7 @@ case "$1" in
       exit 1
     fi
     mkdir -p tmpdoc
+    rotate_log
     nohup .venv/bin/appstore web --port $PORT --credentials $CREDENTIALS --catalog $CATALOG --board-config $BOARD >> "$LOG" 2>&1 &
     echo "已后台启动 (PID $!)，日志: $LOG"
     echo "看板地址: http://127.0.0.1:$PORT"
@@ -76,6 +96,7 @@ case "$1" in
     IP=$(lan_ip)
     if [ "$1" = "lanbg" ]; then
       mkdir -p tmpdoc
+      rotate_log
       nohup .venv/bin/appstore web --host 0.0.0.0 --port $PORT --credentials $CREDENTIALS --catalog $CATALOG --board-config $BOARD >> "$LOG" 2>&1 &
       echo "已后台启动局域网模式 (PID $!)，日志: $LOG"
     else

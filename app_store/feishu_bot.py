@@ -871,8 +871,9 @@ _NOTIFY_SCENARIOS_DEFAULT = {
 def notify_publish_finished(task: Dict[str, Any], app_name: str) -> str:
     """发布任务结束后发通知（应在独立线程调用，本函数不再起线程）。
 
-    是否通知由 board.json feishu.notify_on 按场景控制（默认只开 all_success：
-    勾选的平台全部真实送审成功才发）。通知内容：结果卡片（含摘要+分享图）。
+    是否通知由 board.json feishu.notify_on 按场景控制（默认开启 all_success /
+    partial_success / failed，即成功、部分失败、全部失败都发；手动停止与仅存草稿不发）。
+    通知内容：结果卡片（含摘要+分享图）。
 
     返回值（供调用方决定是否在任务步骤里展示）：
     "sent" 已发送；"failed" 发送失败；"skip:原因" 按规则/配置跳过（不发也不应打步骤日志）。

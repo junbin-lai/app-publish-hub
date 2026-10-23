@@ -122,22 +122,6 @@ def upload_concurrency(path: str) -> int:
     return max(1, min(6, n))
 
 
-def history_retention_days(path: str) -> int:
-    """发布历史保留天数（默认 60 天）。超过该天数的记录在落盘时丢弃。
-
-    board.json 顶层 "history_retention_days": N 可调；配 0 表示不按时间清理，
-    只受条数上限约束。上限 3650 天（10 年）防误配成极大值。
-    """
-    cfg = load_board_config(path)
-    try:
-        days = int(cfg.get("history_retention_days", 60))
-    except (TypeError, ValueError):
-        days = 60
-    if days <= 0:
-        return 0
-    return min(days, 3650)
-
-
 def check_login(path: str, username: str, password: str) -> Optional[Dict[str, Any]]:
     """校验用户名/密码；成功返回 {"username","role","apps"}，失败返回 None。
 

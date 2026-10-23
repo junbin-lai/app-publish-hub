@@ -4,9 +4,9 @@
     {
       "username": "laijunbin",
       "password": "改成你的密码",
-      "role": "owner",
-      "_role说明": "owner=超级管理员（全部应用 + 用户管理）；publisher=发布员（可发布/上传/停止任务）；viewer=只读+查询状态",
-      "_apps说明": "可选：授权应用 id 列表。不写该键 = 全部应用；[] = 无任何应用；owner 恒为全部应用",
+      "role": "publisher",
+      "_role说明": "owner=超级管理员（全部应用 + 用户管理 + 清空历史）；publisher=发布员（在被授权应用内发布/上传/停止/立即上线）；viewer=只读+查询状态。旧配置的 admin 会自动按 publisher 处理",
+      "_apps说明": "可选：授权应用 id 列表。不写该键 = 全部应用；[] = 无任何应用；owner 恒为全部应用。改授权后该账号需重新登录",
       "apps": ["kaadas-smart"]
     },
     {
@@ -16,8 +16,8 @@
     }
   ],
   "session_days": 14,
+  "_upload_concurrency说明": "全局上传并发上限（1~6，默认 2）。多应用/多平台同时上传大安装包会打满上行带宽导致网络失败；改完需重启看板",
   "upload_concurrency": 2,
-  "history_retention_days": 60,
   "_feishu说明": "飞书自建应用机器人（创建步骤见 docs/WEB_GUIDE.md）。app_id/app_secret 在开放平台「凭证与基础信息」页；notify_chat_id 可以不填，改为在群里 @机器人 发送「绑定通知群」自动写入。",
   "feishu": {
     "app_id": "cli_xxxxxxxxxxxxxxxx",
@@ -25,10 +25,10 @@
     "notify_chat_id": "",
     "notify_on_publish": true,
     "notify_on": {
-      "_说明": "按发布结果场景控制群通知；默认只在「勾选平台全部提审成功」时通知（Google 需勾「自动送审」且提交成功才算送审）。以后要开哪种改成 true 重启看板即可。",
+      "_说明": "按发布结果场景控制群通知；默认「全部成功 / 部分失败 / 全部失败」都通知（Google 需勾「自动送审」且提交成功才算送审）。手动停止默认不通知。以后要改哪种改成 true/false 重启看板即可。",
       "all_success": true,
-      "partial_success": false,
-      "failed": false,
+      "partial_success": true,
+      "failed": true,
       "killed": false,
       "draft_only": false
     }

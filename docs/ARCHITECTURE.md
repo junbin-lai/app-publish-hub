@@ -33,7 +33,21 @@ Registry (registry.py) -- 按平台名惰性加载适配器
 2. `catalog.to_release()` 从 apps/catalog.json 组装 `Release`（可被 CLI 参数覆盖）
 3. CLI/Web 为每个目标平台调用 `adapter.publish(release, dry_run)`
 4. 适配器依次：校验凭证 → 上传安装包 → 组装版本信息 → 调平台提交审核接口
-5. 返回 `SubmitResult`；Web 端多平台按任务后台串行执行
+5. 返回 `SubmitResult`；Web 端单任务内各平台**并行**执行（`ThreadPoolExecutor`），不同应用的发布任务彼此独立
+
+## Web 看板的并发与持久化
+
+- **任务隔离**：`_TASKS` 内存字典 + 每任务后台线程；同应用已有 running 任务时拒绝新发布，不同应用可并行
+- **上传闸门**：进程级 `threading.Semaphore`，跨任务/跨应用限制同时上传安装包的数量
+  （`board.json` 顶层 `upload_concurrency`，默认 2，范围 1~6，启动时读取，改完需重启）；
+  排队中的上传在任务被手动停止时会放弃等待
+- **历史落盘**：`config/tasks_history.json` 原子写（tmp + `os.replace` + chmod 600），全局写锁序列化，
+  避免多任务并发结束互相覆盖；发布历史永久保留（不按时间/条数自动清理，`/api/tasks` 仅返回最新 500 条）；
+  服务运行日志 `tmpdoc/web-8090.log` 按 60 天保留，启动时轮转归档
+- **防误清护栏**：未执行过加载历史的进程禁止写盘（防止外部脚本用空列表覆盖历史）
+- **权限模型**：`board.json` 的 `users[].role` 为 owner / publisher / viewer（旧 `admin` 自动映射为 publisher），
+  `users[].apps` 为应用白名单（缺省 = 全部，`[]` = 无，owner 恒全部）；会话中缓存角色与白名单，
+  接口层统一按应用过滤可见数据并拒绝越权操作
 
 ## 查询流程（query_status）
 

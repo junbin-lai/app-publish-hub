@@ -54,7 +54,7 @@ PUBLISH_PLATFORMS = {p for p in PLATFORM_VALUES if p != "apple"}
 # 避免误写误删真实发布历史（config/tasks_history.json）
 _HISTORY_FILE = os.environ.get("APPSTORE_HISTORY_FILE") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "config", "tasks_history.json")
-_HISTORY_MAX = 500  # 条数硬上限（防内存/文件无限增长）；实际保留期由 history_retention_days 控制
+_HISTORY_MAX = 500  # 仅限制 /api/tasks 返回给前端的条数（落盘不裁剪，历史永久保留）
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 
@@ -315,35 +315,10 @@ def _preserve_mode(tmp: str, path: str) -> None:
 _history_loaded = False  # _load_history() 成功后置 True；防外部进程未加载即写盘清空历史
 
 
-def _history_cutoff() -> str:
-    """发布历史保留期的截止时间串（"%Y-%m-%d %H:%M:%S"）；空串表示不按时间清理。
-
-    保留天数来自 board.json history_retention_days（默认 60）。finished_at 早于
-    截止时间的记录在加载/落盘时丢弃。解析失败的记录按“保留”处理，不误删数据。
-    """
-    try:
-        days = board_config.history_retention_days(Handler.board_config_path)
-    except Exception:
-        days = 60
-    if days <= 0:
-        return ""
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - days * 86400))
-
-
-def _history_keep(it: dict, cutoff: str) -> bool:
-    """该历史记录是否在保留期内（cutoff 为空或时间无法解析时保留）。"""
-    if not cutoff:
-        return True
-    ts = str(it.get("finished_at") or "")
-    if not ts:
-        return True
-    return ts >= cutoff  # 同格式字符串可直接按字典序比较
-
-
 def _load_history():
     """启动时把 config/tasks_history.json 里的历史任务加载进 _TASKS（供前端展示）。
 
-    超出 history_retention_days 的记录不加载；文件本身在下一次落盘时被裁剪。
+    发布历史**永久保留**，加载时不做时间/条数过滤；文件只会在任务结束时整体重写。
     """
     global _history_loaded
     try:
@@ -353,26 +328,18 @@ def _load_history():
         return
     if not isinstance(items, list):
         return
-    cutoff = _history_cutoff()
-    skipped = 0
     with _task_lock:
         for it in items:
             if not isinstance(it, dict) or not it.get("id") or it.get("dry_run"):
-                continue
-            if not _history_keep(it, cutoff):
-                skipped += 1
                 continue
             tid = it["id"]
             if tid not in _TASKS:
                 _TASKS[tid] = it
     _history_loaded = True
-    if skipped:
-        _dlog("历史加载", f"按保留期（{cutoff} 之后）过滤掉 {skipped} 条过期记录")
 
 
 def _save_history():
-    """把最近的稳定任务（done/error/已取消）写盘，最多保留 _HISTORY_MAX 条，
-    并按 history_retention_days（默认 60 天）丢弃过期记录；dry-run 校验任务不入历史。
+    """把全部稳定任务（done/error/已取消）写盘；发布历史**永久保留**，不按时间/条数淘汰。
 
     多应用并行发布时，不同任务可能同时结束并同时触发写盘；写盘全程持锁串行化，
     避免两个线程写同一个 .tmp 文件导致内容交叉后损坏历史。
@@ -386,22 +353,18 @@ def _save_history():
         _dlog("历史落盘", "拒绝写盘：本进程未执行 _load_history（非服务进程或未完成启动），跳过以免清空历史")
         return
     t0 = time.time()
-    cutoff = _history_cutoff()
     # 先探测锁是否被占：被占说明有另一个线程正在写盘，本线程将排队等待（串行化生效的证据）
     contended = not _task_lock.acquire(blocking=False)
     if contended:
         _task_lock.acquire()
     try:
-        n_all = len([v for v in _TASKS.values() if v.get("status") in ("done", "error", "killed") and not v.get("dry_run")])
         stable = [
             v for v in _TASKS.values()
             if v.get("status") in ("done", "error", "killed")
             and not v.get("dry_run")
-            and _history_keep(v, cutoff)
         ]
-        expired = n_all - len(stable)
         stable.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
-        items = stable[:_HISTORY_MAX]
+        items = stable
         if contended:
             _dlog("历史落盘", f"检测到并发写盘（锁被占用，已排队获得），本次将写入 {len(items)} 条")
         tmp = _history_path() + ".tmp"
@@ -409,9 +372,8 @@ def _save_history():
             json.dump(items, f, ensure_ascii=False, indent=1)
         _preserve_mode(tmp, _history_path())
         os.replace(tmp, _history_path())
-        _dlog("历史落盘", f"完成：候选 {n_all} 条 → 淘汰过期 {expired} 条 → 落盘 {len(items)} 条，"
-              f"耗时 {time.time()-t0:.3f}s（保留期起于 {cutoff or '不限制'}；"
-              f"最新: {(items[0].get('finished_at') or '?') if items else '无'}）")
+        _dlog("历史落盘", f"完成：落盘 {len(items)} 条，耗时 {time.time()-t0:.3f}s"
+              f"（最新: {(items[0].get('finished_at') or '?') if items else '无'}）")
     except Exception as e:
         _dlog("历史落盘", f"失败: {e!r}")
     finally:

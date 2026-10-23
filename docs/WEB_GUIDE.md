@@ -28,22 +28,36 @@
 ## 登录与权限（config/board.json）
 
 看板默认**无登录、仅本机 127.0.0.1 访问**（和以前一样，零配置可用）。配置 `config/board.json`（模板
-`config/example.board.json`，已 gitignore 不入库）后开启**账号登录 + 两种角色**：
+`config/example.board.json`，已 gitignore 不入库）后开启**账号登录 + 三种角色 + 应用级授权**：
 
 ```json
 {
   "users": [
-    {"username": "laijunbin", "password": "改成你的密码", "role": "admin"},
-    {"username": "xiaowang",  "password": "同事的密码",   "role": "viewer"}
+    {"username": "laijunbin", "password": "改成你的密码", "role": "owner"},
+    {"username": "xiaowang",  "password": "同事的密码",   "role": "publisher",
+     "apps": ["kaadas-smart"]},
+    {"username": "guest",     "password": "访客密码",     "role": "viewer"}
   ],
-  "session_days": 14
+  "session_days": 14,
+  "upload_concurrency": 2
 }
 ```
 
 | 角色 | 能做什么 |
 | --- | --- |
-| **admin** | 全部操作：发布、上传安装包、停止任务、清空历史、华为立即上线、查询 |
+| **owner** | 超级管理员：**全部应用** + 发布/上传/停止/清空历史 + 华为立即上线 + 用户管理（增删改账号与授权） |
+| **publisher** | 发布员：在被授权的应用内发布、上传安装包、停止任务、华为立即上线、查询；**不能**管理用户、不能清空历史 |
 | **viewer** | 只读：看板/版本/发布历史/分享图、查询状态、下载签名 APK；**发布类按钮全部禁用**（后端同样拦截） |
+
+**应用级授权（apps）**：
+
+- 只有 `owner` 恒为全部应用；`publisher` / `viewer` 的可见与可操作范围都受 `apps` 限制
+- 不写 `apps` 键 = 全部应用（兼容旧配置）；`[]` = 无任何应用；列表 = 指定应用 id
+- 被隐藏的应用不会出现在侧栏、任务列表、历史里；对未授权应用调用发布/查询/下载等接口一律拒绝并记审计 + 飞书安全告警
+- 修改授权后该账号现有会话会被踢下线，需重新登录生效
+- 旧配置里的 `role: "admin"` 会自动按 `publisher` 处理，无需手工迁移
+
+日常改授权不用手工编辑文件：owner 登录后点顶部「用户管理」→ 编辑账号，勾选「授权应用」（勾「全部应用」含以后新增的应用；全不勾 = 无任何应用）；标题栏「添加账号」可新增账号。
 
 - 会话 Cookie 有效期默认 14 天（`session_days` 可调，1~90），访问自动续期；重启看板后需重新登录。
 - 不想在文件里放明文密码的，可以存 `"password_sha256": "<sha256(明文)>"`（有它时优先校验哈希）。
@@ -54,7 +68,8 @@
 
 账号的登录与敏感操作会追加记录到 `config/login_log.jsonl`（JSONL 一行一条，已 gitignore）：
 
-- **记录内容**：登录成功/失败（错密码也记，能看出暴力尝试）、退出登录、发布应用（含应用/平台/版本/dry-run 标记）、上传安装包、修改应用配置、停止发布任务、清空发布历史、华为立即上线；viewer 越权尝试写操作被拒也会记
+- **记录内容**：登录成功/失败（错密码也记，能看出暴力尝试）、退出登录、发布应用（含应用/平台/版本/dry-run 标记）、上传安装包、修改应用配置、停止发布任务、清空发布历史、华为立即上线、账号增删改与应用授权变更；viewer 越权写操作、publisher 访问未授权应用、非 owner 清空历史等被拒操作也会记
+- **安全告警**：账号/授权变更与越权尝试会同时发到 `feishu.security_chat_id`（owner 私聊），不进发布通知群
 - **查看**：`cat config/login_log.jsonl`（或 `grep 失败 config/login_log.jsonl`、`grep 发布 config/login_log.jsonl`）
 - 普通浏览/查询不记录，避免日志噪音；测试隔离可用环境变量 `APPSTORE_AUDIT_LOG` 指向临时文件
 
@@ -62,8 +77,18 @@
 
 发布历史（`config/tasks_history.json`）清空前有**两道防护**：
 
-1. **必须显式确认**：调 `POST /api/tasks/clear` 要带 `{"confirm": true}`，否则返回 400 不执行（前端没有清空按钮，这个接口只给脚本用，多一步确认不影响日常）
+1. **必须显式确认**：调 `POST /api/tasks/clear` 要带 `{"confirm": true}`，否则返回 400 不执行；且**仅 owner** 可调用（前端没有清空按钮，这个接口只给脚本用，多一步确认不影响日常）
 2. **自动多份备份**：清空前写 `tasks_history.json.bak`（最近一次）+ `tasks_history.json.bak-YYYYmmdd-HHMMSS`（保留最近 5 份，多次清空不会覆盖上一次的备份）
+
+**保留期**：发布历史**永久保留**，不按时间或条数自动淘汰（只会在每次任务结束时整体重写文件）。
+安全审计日志（`login_log.jsonl`）同样永久保留；需要清理时只能由 owner 调清空接口（自动备份）。
+
+**服务运行日志**：`tmpdoc/web-8090.log` 只保留最近 **60 天**——每次启动检查，超过 50MB 或 60 天未更新就归档为
+`web-8090-YYYYmmdd-HHMMSS.log`，归档文件超过 60 天在下次启动时自动删除（`start-dashboard.sh` 的
+`LOG_KEEP_DAYS` / `LOG_MAX_MB` 可调）。
+
+**防误清护栏**：只有正常启动并加载过历史的服务进程才允许写历史文件；独立脚本若未先加载历史就调用写盘会被拒绝，
+避免 2026-10-23 那次「外部验证脚本用空列表覆盖 84KB 历史」的事故重演。
 
 万一误清，恢复办法是把备份条目和当前文件**按 id 合并**（不要直接覆盖，否则会丢掉清空后新产生的记录）：
 
@@ -89,10 +114,10 @@ json.dump(merged, open("config/tasks_history.json", "w"), ensure_ascii=False, in
    🖥  App发布中枢已启动（局域网模式，监听 0.0.0.0:8090）
       同网段访问: http://192.168.x.x:8090/
       看板配置: config/board.json（登录鉴权: 已开启）
-      账号: laijunbin(admin), xiaowang(viewer)
+      账号: laijunbin(owner), xiaowang(publisher), guest(viewer)
    ```
 
-4. 同事用浏览器打开该地址 → 输入 viewer 账号 → 只能看和查询，不能发布。
+4. 同事用浏览器打开该地址 → 输入 viewer 账号 → 只能看和查询，不能发布；publisher 账号只能看到并发布被授权的应用。
 
 注意事项：
 
@@ -160,26 +185,26 @@ json.dump(merged, open("config/tasks_history.json", "w"), ensure_ascii=False, in
 
 ### 四、发布完成通知长什么样
 
-**默认只有「正式发布 + 勾选的平台全部提审成功」才会通知**（dry-run 校验、部分失败、被手动停止、只存草稿
-等场景一律静默）。判定口径：国内平台提交成功即提审；Google 须勾选「自动送审」且提交成功才算送审，
+**默认通知范围**：正式发布且**勾选平台全部提审成功**、**部分平台失败**、**全部失败** 都会通知；
+dry-run 校验、被手动停止、只存草稿等场景默认静默。判定口径：国内平台提交成功即提审；Google 须勾选「自动送审」且提交成功才算送审，
 仅存草稿不算。
 
-以后想扩展通知范围，改 `config/board.json` 的 `feishu.notify_on` 字段即可（改完重启）：
+以后想调整通知范围，改 `config/board.json` 的 `feishu.notify_on` 字段即可（改完重启）：
 
 ```json
 "notify_on": {
-  "all_success": true,      // 勾选平台全部提审成功（默认唯一开启）
-  "partial_success": false, // 部分平台成功（其余失败/仅草稿）
-  "failed": false,          // 全部失败
-  "killed": false,          // 被手动停止
+  "all_success": true,      // 勾选平台全部提审成功（默认开启）
+  "partial_success": true,  // 部分平台成功（其余失败/仅草稿，默认开启）
+  "failed": true,           // 全部平台失败（默认开启）
+  "killed": false,          // 被手动停止（默认关闭，手动停止不发通知）
   "draft_only": false       // 只存草稿未送审（如 Google 未勾自动送审）
 }
 ```
 
 满足条件时，机器人往通知群发一张卡片：
 
-- 标题：✅ 发布完成 · 应用名 + 版本
-- 字段：应用、平台、操作者（登录账号）、结束时间
+- 标题：✅ 发布完成 / ⚠️ 部分平台失败 / ❌ 发布失败 / ⏹ 发布已手动停止 · 应用名 + 版本
+- 字段：应用、平台、操作者（登录账号）、结束时间；**存在失败时字段名改为「成功平台（N）」**，并追加失败明细（最多 6 条）
 - **状态分享图**：发布后自动查一次各平台状态，渲染与看板同款的分享图嵌在卡片里
 - 「打开看板」按钮：直接跳回看板页面
 
@@ -188,16 +213,16 @@ json.dump(merged, open("config/tasks_history.json", "w"), ensure_ascii=False, in
 
 ## 界面布局
 
-左侧栏：应用列表（按分类分组）
+左侧栏：应用列表（按分类分组；正在发布的应用带「运行中」小角标；只显示当前账号被授权的应用）
 右侧主区：
 
-1. **顶部**：当前选中应用信息（名称 / 包名 / 版本）
+1. **顶部**：当前选中应用信息（名称 / 包名 / 版本）；右上角有「用户管理」（仅 owner，可增删改账号与应用授权）
 2. **三列卡片**
    - **应用信息**：包名、versionName、versionCode（未选包时版本显示 "-"）
    - **构建产物**：AAB/APK **选择文件上传**（区分 .aab / .apk，选后自动解析版本/包名）
    - **发布**：版本名、版本号（选包后自动回填）、**平台多选复选框**、更新说明、**定时上线时间选择**、发布/查询按钮
 3. **平台状态**：各平台已上架版本、审核状态、草稿版本（三行）
-4. **日志**：发布任务进度与结果
+4. **日志**：发布任务进度与结果（按应用独立；切回正在发布的应用会自动恢复其进度）
 
 ## 发布操作步骤
 
@@ -215,10 +240,32 @@ json.dump(merged, open("config/tasks_history.json", "w"), ensure_ascii=False, in
 
 - 复选框全选/清空按钮在平台列表下方
 - Apple 不参与发布（仅查询）
-- 如果你勾选了多个平台，后台会**依次**执行发布
+- 勾选多个平台时，各平台**并行**执行（不再串行等待）；但**安装包上传有全局并发上限**（见下节），超出的上传会排队
 - 「查询全部平台」是**并发**执行的，总耗时约等于最慢的那个平台（不再是各平台相加）；
   苹果的商店页面版本按包名缓存 5 分钟，避免每次查询都抓一次大页面
-- 荣耀、应用宝上传 APK 遇到连接中断/超时会**自动重试**（每次从头重传，最多 3 次，指数退避）
+- 荣耀、应用宝上传 APK 遇到连接中断/超时会**自动重试**（每次从头重传，最多 3 次，指数退避）；荣耀获取 token 也会重试 3 次（2s/4s 退避）
+- Google Play 上传完成后**直接 commit**（不再空等 processing 轮询）；commit 遇到 Google 5xx 时退避重试 3 次（8s/16s），4xx 与超时不重试，避免无意义等待
+- OPPO 提交后会**回查 app/info 自检**：若未生成新的审核任务（接口返回成功但后台未受理），最多等 180 秒确认，仍无则任务标记失败，不会出现「假成功」
+
+### 多应用并行发布
+
+多个应用可以**同时发布**，互不干扰：
+
+- 每个应用有独立的发布任务与进度面板：切到别的应用继续发布不会打断正在跑的任务，切回来会**自动恢复**该应用的进度显示
+- 侧栏每个正在发布的应用会显示「运行中」小角标，一眼看出谁在跑
+- **同一个应用不允许并发发布**：已有运行中任务时再次发布会被拦下，并提示现有任务的详情
+- 任务结束时，即使你正在看别的应用，日志区也会补一条「[应用名] 刚才的发布已结束」通知
+- 权限隔离：publisher / viewer 只能看到自己被授权应用的运行状态与历史
+
+**全局上传并发上限**（`board.json` 顶层，默认 2，可设 1~6，改完需重启）：
+
+```json
+"upload_concurrency": 2
+```
+
+多应用/多平台同时上传 200MB 级安装包会把上行带宽打满，导致 TLS 握手超时、连接重置等瞬时失败。
+这个闸门是**进程级**的：所有任务、所有应用共享，超出的上传会排队等待（排队中的任务仍可被手动停止）。
+
 
 ### Google Play 状态口径（重要）
 
@@ -308,10 +355,12 @@ Content-Type: application/json
   "release_notes": "修复问题",
   "online_time": "2026-09-01T10:00"
 }
-``
+```
 
 - `platform`：逗号分隔多个；`"all"` = 全部已配平台（不含 Apple）
 - `online_time`：ISO 格式时间（`YYYY-MM-DDTHH:MM`），留空=立即
+- 需要 `publisher` / `owner` 角色，且账号必须持有该 `app_id` 的授权；越权调用会记审计并触发飞书安全告警
+- 同一应用已有运行中任务时返回 400，错误信息里带上现有任务 id / 操作者 / 开始时间；不同应用可同时发布
 
 返回 `{"ok": true, "task_id": "xxx"}`，然后 GET `/api/tasks/<id>` 轮询进度。
 
@@ -360,6 +409,15 @@ Content-Type: application/json
 {"app_id": "example-app"}
 ```
 
+### 发布任务列表
+
+```http
+GET /api/tasks            # {running: [...], history: [...](历史永久保留；接口最多返回最新 500 条)}
+GET /api/tasks?light=1    # 只返回 {running: [...]}，供前端侧栏「运行中」角标轻量轮询
+```
+
+按当前账号的应用授权过滤：未授权应用的任务不会出现在结果里。
+
 ### 登录 / 会话
 
 ```http
@@ -369,13 +427,25 @@ Content-Type: application/json
 {"username": "laijunbin", "password": "..."}
 ```
 
-返回 `{"ok": true, "username": "...", "role": "admin"}` 并设置会话 Cookie（`board_session`，HttpOnly）。
-开启鉴权后其余 API 未登录一律 401；viewer 调发布类接口返回 403。
+返回 `{"ok": true, "username": "...", "role": "owner", "apps": null}` 并设置会话 Cookie（`board_session`，HttpOnly）。
+`apps` 为 `null` 表示全部应用（owner 恒为 null），数组表示授权范围。
+开启鉴权后其余 API 未登录一律 401；viewer 调发布类接口、publisher 操作未授权应用返回 403。
 
 ```http
-GET  /api/session    # 当前登录态 {authenticated, auth_enabled, username, role}
+GET  /api/session    # 当前登录态 {authenticated, auth_enabled, username, role, apps}
 POST /api/logout     # 退出登录
 ```
+
+### 用户管理（仅 owner）
+
+```http
+GET  /api/users                 # [{username, role, apps}]
+POST /api/users                 # {username, password, role, apps?} 新增
+POST /api/users/update          # {username, password?, role?, apps?} 修改（改密码/角色/授权会踢掉该账号会话）
+POST /api/users/delete          # {"username": "..."} 删除
+```
+
+`role` 取 `owner` / `publisher` / `viewer`；`apps` 传 `null` = 全部应用、`[]` = 无任何应用、数组 = 指定应用 id。
 
 ### 状态分享图（服务端渲染）
 
@@ -392,4 +462,4 @@ GET /api/share-image?app_id=example-app
 GET /api/config
 ```
 
-返回凭证/目录路径、登录开关、当前用户角色、飞书机器人连接状态。
+返回凭证/目录路径、登录开关、当前用户角色与应用授权范围（`apps`）、飞书机器人连接状态。
