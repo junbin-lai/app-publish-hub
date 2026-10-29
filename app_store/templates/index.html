@@ -161,8 +161,6 @@ function $(v){return document.getElementById(v)}
 function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 // 构建产物只展示文件名：完整路径放进 dataset.path，不显示在界面上
 function bn(p){var s=String(p||"");var i=Math.max(s.lastIndexOf("/"),s.lastIndexOf("\\"));return i>=0?s.slice(i+1):s}
-function setBuildInput(id,path){var e=$(id);if(!e)return;e.value=path?bn(path):"";e.dataset.path=path||""}
-function syncBuildInputs(a){if(!a)return;setBuildInput("paab",a.aab_build);setBuildInput("papk",a.apk_build)}
 function iconSvg(n){var P={check:'<polyline points="20 6 9 17 4 12"/>',cross:'<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',bolt:'<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',upload:'<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>',warn:'<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',sun:'<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>',moon:'<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>'};return '<svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(P[n]||"")+"</svg>"}
 function api(p,o){return fetch(p,o).then(function(r){if(r.status===401)showLogin();return r.json().catch(function(){return{}})})}
 // ==== 登录/会话（board.json 配置 users 后开启；viewer 只读，publisher 可发布，owner 另可管用户与全部应用） ====
@@ -344,7 +342,7 @@ h+='<div class=card><h3>发布</h3>'+
 '<div class=card><h3>下载</h3>'+
 '<div class="section-head"><span class="eyebrow">Google Play</span><button class="sm secondary" onclick="showBundleModal()">选择版本…</button></div>'+
 '<div id=gsel><span class=muted>未选择版本</span></div></div></div>';
-$("appc").innerHTML=h;syncBuildInputs(a)}
+$("appc").innerHTML=h}
 function row(k,v){return'<div class=row><span class=k>'+esc(k)+'</span><span class=v>'+v+"</span></div>"}
 function fp(t){var a=ST.cur;if(!a)return;api("/api/files").then(function(f){var l=(f&&f[t])||[];if(!l.length){toast("未检测到"+t.toUpperCase()+"文件","err");return}
 var h='<div class="overlay" onclick="if(event.target===this)cm()"><div class="modal"><h3 class="section-title" style="margin-bottom:var(--space-2)">选择 '+t.toUpperCase()+" 文件</h3>";(l||[]).forEach(function(x){var z=x.size>1e6?(x.size/1e6).toFixed(1)+" MB":Math.max(1,Math.round(x.size/1e3))+" KB";h+='<div class="file-item" role="button" tabindex="0" data-type="'+t+'" data-path="'+esc(x.path)+'" onclick="pick(this)"><span class="fname">'+esc(x.name)+'</span><span class="muted">'+z+"</span></div>"});h+='<div style="margin-top:var(--space-2);text-align:right"><button class="secondary" onclick="cm()">取消</button></div></div></div>';var d=document.createElement("div");d.innerHTML=h;document.body.appendChild(d.firstElementChild)})}
