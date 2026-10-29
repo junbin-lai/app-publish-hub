@@ -203,7 +203,7 @@ def _read_body(handler: BaseHTTPRequestHandler) -> Dict[str, Any]:
     return data
 
 
-_UPLOAD_MAX_BYTES = 1024 * 1024 * 1024  # 单文件上传上限 1GB（email 解析需整包读入内存）
+_UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 单文件上传上限 2GB（email 解析需整包读入内存，峰值约 2 倍）
 
 
 def _parse_multipart_upload(handler: BaseHTTPRequestHandler) -> tuple:
