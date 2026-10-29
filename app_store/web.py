@@ -14,9 +14,10 @@ API：
   POST /api/logout            退出登录
   POST /api/publish           {app_id, platform|all, dry_run}（publisher / owner）
   POST /api/status            {app_id, platform?}（viewer 可用）
-  GET  /api/users             用户列表（仅 owner）
+  GET  /api/users             用户列表（owner 看全部；其他角色只返回自己）
   POST /api/users             {username, password, role, apps?} 新增（仅 owner，密码自动哈希落盘）
-  POST /api/users/update      {username, password?, role?, apps?} 改密码/角色/授权应用（仅 owner）
+  POST /api/users/update      {username, password?, role?, apps?}（owner：改密码/角色/授权应用；
+                              其他角色：只能改自己的密码，role/apps 字段会被拒绝）
   POST /api/users/delete      {username} 删除（仅 owner）
 """
 from __future__ import annotations
@@ -437,6 +438,13 @@ def _update(tid, **kw):
                     notify_needed = False
             if notify_needed:
                 threading.Thread(target=_notify_feishu_publish, args=(tid,), daemon=True).start()
+        # 发布历史写飞书电子表格（异步线程，失败不影响任务结果；dry-run 不写；
+        # 未配置 feishu.sheet / 无匹配工作表的应用静默跳过）
+        with _task_lock:
+            t = _TASKS.get(tid)
+            if t is not None and not t.get("dry_run") and not t.get("sheet_started"):
+                t["sheet_started"] = True
+                threading.Thread(target=_sheet_record, args=(tid,), daemon=True).start()
 
 
 def _pstep(tid: str, plat: str, msg: str, level: str = "info"):
@@ -831,12 +839,12 @@ def _is_transient_query_error(msg: str) -> bool:
 
 
 def _latest_local_release(app_id: str, platform: str) -> Optional[Dict[str, Any]]:
-    """本地最近一次某平台成功提审的任务发布参数 {version_code, online_time}。
+    """本地最近一次某平台成功提审的任务发布参数 {version_code, version_name, online_time}。
 
     应用宝定时发布审核通过后接口只回 audit=3（无法区分已上架/待定时发布），
     用最近一次成功提审的 version_code 与线上版本号比对来推断「待发布」。
-    取「最近成功提审任务」的参数：若最近一次是立即发布（无 online_time），
-    说明定时已被新提交覆盖，返回 None 不做推断。
+    另外应用宝的审核状态接口不返回待审版本号，审核中时用这里的
+    version_code / version_name 补上「审核中」版本，分享图才不会只剩一句文案。
     """
     best_key, best = "", None
     with _task_lock:
@@ -853,9 +861,10 @@ def _latest_local_release(app_id: str, platform: str) -> Optional[Dict[str, Any]
             if finished >= best_key:
                 best_key, best = finished, {
                     "version_code": t.get("version_code"),
+                    "version_name": t.get("version_name"),
                     "online_time": t.get("online_time"),
                 }
-    if best and best.get("online_time") and best.get("version_code"):
+    if best and best.get("version_code"):
         return best
     return None
 
@@ -1074,6 +1083,39 @@ def _notify_feishu_publish(tid: str) -> None:
         _step(tid, f"飞书通知: 失败 {e}", "error")
 
 
+def _sheet_record(tid: str) -> None:
+    """任务结束后把发布历史写入飞书电子表格（独立线程里调用，失败不影响任务结果）。
+
+    每个应用对应一个工作表，由 feishu_bot 按工作表名 ↔ 应用名自动匹配；
+    返回 sent / failed / skip:原因，skip 按规则跳过不打步骤日志。
+    """
+    with _task_lock:
+        t = _TASKS.get(tid) or {}
+        snapshot = {
+            "app_id": t.get("app_id"), "platform": t.get("platform"),
+            "version_name": t.get("version_name"), "version_code": t.get("version_code"),
+            "status": t.get("status"), "results": list(t.get("results") or []),
+            "errors": list(t.get("errors") or []), "dry_run": t.get("dry_run"),
+            "user": t.get("user"), "finished_at": t.get("finished_at"),
+            "auto_review": bool(t.get("auto_review")),
+        }
+    app_id = str(snapshot.get("app_id") or "")
+    app_name = app_id
+    try:
+        app = get_catalog(Handler.catalog_path).get_app(app_id)
+        app_name = str(app.get("name") or app_id)
+    except Exception:
+        pass
+    try:
+        outcome = feishu_bot.sheet_add_record(snapshot, app_id, app_name)
+        if outcome == "sent":
+            _step(tid, "飞书电子表格: 已写入发布记录", "ok")
+        elif outcome == "failed":
+            _step(tid, "飞书电子表格: 写入失败（详见服务日志）", "error")
+    except Exception as e:
+        _step(tid, f"飞书电子表格: 失败 {e}", "error")
+
+
 # ---- 登录/操作审计日志（config/login_log.jsonl，一行一条 JSON） ----
 _AUDIT_LOG_FILE = os.environ.get("APPSTORE_AUDIT_LOG") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "config", "login_log.jsonl")
@@ -1210,7 +1252,8 @@ class Handler(BaseHTTPRequestHandler):
                                user.get("username") or "?", _client_ip(self), False,
                                "跨站请求被拒绝")
                 return (403, "origin")
-            if user.get("role") not in ("publisher", "owner"):
+            if user.get("role") not in ("publisher", "owner") and path != "/api/users/update":
+                # /api/users/update 例外：viewer 也可改**自己的**密码，越权由 handler 内校验
                 if path in _USER_MGMT_PATHS:
                     # viewer 试图碰用户管理接口：安全告警（可能是账号被盗后试探）
                     _security_alert("用户管理越权尝试", user.get("username") or "?",
@@ -1421,11 +1464,14 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def _api_users(self):
-        err = self._require_owner()
-        if err:
-            return _json_response(self, {"ok": False, "error": err}, 403)
+        """账号列表：owner 返回全部；publisher / viewer 只返回自己（用于「我的账号」改密码）。"""
+        me = _request_user(self)
+        if not me:
+            return _json_response(self, {"ok": False, "error": "未登录或会话已过期，请先登录"}, 401)
         users = [{"username": u["username"], "role": u["role"], "apps": u.get("apps")}
                  for u in board_config.list_users(self.board_config_path)]
+        if me.get("role") != "owner":
+            users = [u for u in users if u["username"] == me.get("username")]
         return _json_response(self, {"ok": True, "users": users})
 
     def _normalize_user_apps(self, raw: Any) -> Optional[List[str]]:
@@ -1483,15 +1529,32 @@ class Handler(BaseHTTPRequestHandler):
         return _json_response(self, {"ok": True, "username": username, "role": role})
 
     def _api_users_update(self, body: Dict[str, Any]):
-        """改密码/角色/授权应用（不改用户名）；变更后踢掉该用户现有会话强制重新登录。"""
-        err = self._require_owner()
-        if err:
-            return _json_response(self, {"ok": False, "error": err}, 403)
+        """改密码/角色/授权应用（不改用户名）；变更后踢掉该用户现有会话强制重新登录。
+
+        owner 可改任意账号的角色/授权/密码；publisher / viewer 只能改**自己的密码**，
+        提交 role / apps 字段会被拒绝（防止借改密接口给自己提权）。
+        """
+        if not _auth_enabled():
+            raise StoreError("未开启登录鉴权（本机直连模式没有账号体系，无密码可改）")
+        me = _request_user(self) or {}
+        is_owner = me.get("role") == "owner"
         username = str(body.get("username") or "").strip()
         password = str(body.get("password") or "")
         role = str(body.get("role") or "").strip().lower()
         apps_provided = "apps" in body
-        apps = self._normalize_user_apps(body.get("apps")) if apps_provided else None
+        if not is_owner:
+            if username and username != (me.get("username") or ""):
+                _security_alert("越权修改他人账号", me.get("username") or "?",
+                                _client_ip(self), f"尝试修改账号 {username} 的密码", ok=False)
+                raise StoreError("只能修改自己的密码")
+            username = me.get("username") or ""
+            if role or apps_provided:
+                _security_alert("越权修改账号属性", me.get("username") or "?",
+                                _client_ip(self), "尝试通过改密接口修改角色/应用授权", ok=False)
+                raise StoreError("角色与应用授权只能由 owner 修改")
+            if not password:
+                raise StoreError("请填写新密码（至少 6 位）")
+        apps = self._normalize_user_apps(body.get("apps")) if (is_owner and apps_provided) else None
         with _user_mgmt_lock:
             users = board_config.list_users(self.board_config_path)
             target = next((u for u in users if u["username"] == username), None)
@@ -1525,8 +1588,8 @@ class Handler(BaseHTTPRequestHandler):
             if not board_config.save_users(self.board_config_path, _users_to_save(users)):
                 raise StoreError("写入 board.json 失败（文件权限或磁盘问题）")
             _session_drop_by_user(username)
-        me = _request_user(self) or {}
-        _security_alert("修改用户", me.get("username") or "?", _client_ip(self),
+        _security_alert("修改密码（本人）" if not is_owner else "修改用户",
+                        me.get("username") or "?", _client_ip(self),
                         f"账号 {username}：{('，'.join(changed))}")
         return _json_response(self, {"ok": True})
 
@@ -2162,6 +2225,15 @@ def run_server(
     )
 
     _load_history()
+    # 启动后异步同步飞书电子表格：为每个应用补齐同名工作表（失败不影响看板启动）
+    def _sync_sheet():
+        try:
+            names = [str(a.get("name") or a.get("id") or "")
+                     for a in get_catalog(catalog_path).all_apps()]
+            feishu_bot.sheet_sync(names)
+        except Exception as e:
+            print(f"[飞书] 电子表格同步异常: {e}", flush=True)
+    threading.Thread(target=_sync_sheet, daemon=True).start()
     httpd = ThreadingHTTPServer((host, port), Handler)
     # 启动横幅全部带 flush=True：后台(nohup)运行时日志文件能立刻看到
     if is_loopback:

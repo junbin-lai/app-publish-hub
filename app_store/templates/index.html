@@ -182,10 +182,11 @@ function logout(){api("/api/logout",{method:"POST",headers:{"Content-Type":"appl
 function isAdmin(){return !(ST.ME&&ST.ME.role==="viewer")}
 function renderMeBox(){var m=$("meInfo"),lo=$("logoutBtn"),fs=$("fsInfo"),ub=$("userBtn");if(!m)return;
 var me=ST.ME||{};
-if(me.auth_enabled){m.textContent=(me.username||"?")+" · "+roleName(me.role)+(me.role!=="owner"&&me.apps?"（"+(me.apps.length?me.apps.length+" 个应用":"无应用权限")+"）":"");lo.classList.remove("hide");if(ub){me.role==="owner"?ub.classList.remove("hide"):ub.classList.add("hide")}}
+if(me.auth_enabled){m.textContent=(me.username||"?")+" · "+roleName(me.role)+(me.role!=="owner"&&me.apps?"（"+(me.apps.length?me.apps.length+" 个应用":"无应用权限")+"）":"");lo.classList.remove("hide");if(ub){ub.classList.remove("hide");ub.textContent=me.role==="owner"?"用户管理":"我的账号"}}
 else{m.textContent="";lo.classList.add("hide");if(ub)ub.classList.add("hide")}
 if(fs){var f=ST.FS;if(f&&f.enabled){fs.textContent="飞书"+(f.connected?"已连接":(f.last_error?"异常":"连接中"))+(f.bound_chat?"":"·未绑通知群")}else fs.textContent=""}}
-// ==== 用户管理（仅 owner：增删改账号，密码自动哈希写回 board.json，改密/改角色后对方需重新登录） ====
+// ==== 用户管理（owner：增删改任意账号；其他角色：只能查看自己并修改密码） ====
+function isOwner(){return !ST.ME||!ST.ME.auth_enabled||ST.ME.role==="owner"}
 function roleName(r){return r==="owner"?"Owner":(r==="publisher"?"发布员":"只读")}
 function roleSel(id,cur){return '<select id="'+id+'"><option value="viewer"'+(cur==="viewer"?" selected":"")+'>viewer（只读/查询）</option><option value="publisher"'+(cur==="publisher"?" selected":"")+'>publisher（发布员：可发布授权应用）</option><option value="owner"'+(cur==="owner"?" selected":"")+'>owner（超级管理员：全部应用+用户管理）</option></select>'}
 // 授权应用多选：cur=null/undefined 表示「全部应用」，数组表示指定应用（[] = 无应用）
@@ -204,31 +205,32 @@ var out=[],box=document.querySelectorAll("."+prefix+"App");for(var i=0;i<box.len
 return out}
 function showUserModal(){api("/api/users").then(function(r){if(!r||!r.ok){toast((r&&r.error)||"无法获取用户列表","err");return}
 ST.USERS=r.users||[];ST.EDITING=null;
+var own=isOwner();
 var h='<div class="overlay" onclick="if(event.target===this)cm()"><div class="modal" style="--modal-min-w:480px">'
-+'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-3)"><h3 class="section-title" style="margin:0">用户管理</h3><button class="sm" id="nuToggle" onclick="toggleNewUser()">添加账号</button></div>'
++'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-3)"><h3 class="section-title" style="margin:0">'+(own?"用户管理":"我的账号")+'</h3>'
++(own?'<button class="sm" id="nuToggle" onclick="toggleNewUser()">添加账号</button>':'')+'</div>'
 +'<div id="uList"></div>'
-+'<div id="nuForm" class="hide" style="margin-top:var(--space-2)">'
++(own?('<div id="nuForm" class="hide" style="margin-top:var(--space-2)">'
 +'<div class="input-row"><input id="nuUser" placeholder="用户名" autocomplete="off"></div>'
 +'<div class="input-row"><input id="nuPass" type="password" placeholder="密码（至少 6 位）" autocomplete="new-password"></div>'
 +'<div class="input-row">'+roleSel("nuRole","viewer")+'</div>'
 +'<div class="input-row">'+appPickHtml("nuApps",null)+'</div>'
-+'<div style="margin-top:var(--space-2)"><button onclick="userAdd()">添加</button></div></div>'
++'<div style="margin-top:var(--space-2)"><button onclick="userAdd()">添加</button></div></div>'):'')
 +'<div style="margin-top:var(--space-3);text-align:right"><button class="secondary" onclick="cm()">关闭</button></div></div></div>';
 var d=document.createElement("div");d.innerHTML=h;document.body.appendChild(d.firstElementChild);
 renderUserList()})}
-function renderUserList(){var h="";(ST.USERS||[]).forEach(function(u,i){
+function renderUserList(){var own=isOwner();var h="";(ST.USERS||[]).forEach(function(u,i){
 if(ST.EDITING===i){
 h+='<div style="padding:var(--space-2) 0;border-bottom:1px solid var(--line)">'
 +'<div class="row"><span class="k">账号</span><span class="v">'+esc(u.username)+'（当前 '+roleName(u.role)+'）</span></div>'
-+'<div style="margin-top:var(--space-2)"><label>新密码（留空 = 不修改）</label><input id="euPass" type="password" placeholder="至少 6 位" autocomplete="new-password"></div>'
-+'<div style="margin-top:var(--space-2)"><label>角色</label>'+roleSel("euRole",u.role)+'</div>'
-+appPickHtml("euApps",u.apps)
++'<div style="margin-top:var(--space-2)"><label>新密码'+(own?'（留空 = 不修改）':'（修改后需重新登录）')+'</label><input id="euPass" type="password" placeholder="至少 6 位" autocomplete="new-password"></div>'
++(own?('<div style="margin-top:var(--space-2)"><label>角色</label>'+roleSel("euRole",u.role)+'</div>'+appPickHtml("euApps",u.apps)):'')
 +'<div style="display:flex;gap:var(--space-2);margin-top:var(--space-3)"><button onclick="userSave('+i+')">保存</button><button class="secondary" onclick="userEdit(-1)">取消</button></div></div>'
 }else{
 h+='<div style="display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2) 0;border-bottom:1px solid var(--line)">'
 +'<span style="flex:1">'+esc(u.username)+'<div class="muted" style="font-size:var(--font-caption)">'+esc(appsTxt(u))+'</div></span><span class="badge">'+roleName(u.role)+'</span>'
-+'<button class="secondary sm" onclick="userEdit('+i+')">编辑</button>'
-+'<button class="secondary sm" style="color:var(--err)" onclick="confirmUserDel('+i+')">删除</button></div>'}
++'<button class="secondary sm" onclick="userEdit('+i+')">'+(own?"编辑":"修改密码")+'</button>'
++(own?'<button class="secondary sm" style="color:var(--err)" onclick="confirmUserDel('+i+')">删除</button>':'')+'</div>'}
 });
 if(!(ST.USERS||[]).length)h+='<div class="muted" style="padding:var(--space-2) 0">暂无账号</div>';
 $("uList").innerHTML=h}
@@ -244,12 +246,19 @@ if(!u.value.trim()||!p.value){toast("请填写用户名和密码","err");return}
 api("/api/users",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u.value.trim(),password:p.value,role:r.value,apps:appPickValue("nuApps")})}).then(function(res){
 if(!res||!res.ok){toast((res&&res.error)||"新增失败","err");return}
 toast("已新增账号 "+u.value.trim());u.value="";p.value="";refreshUsers();var nf=$("nuForm");if(nf&&!nf.classList.contains("hide"))toggleNewUser()}).catch(function(){toast("网络错误","err")})}
-function userSave(i){var u=(ST.USERS||[])[i];if(!u)return;var p=$("euPass"),r=$("euRole");if(!p||!r)return;
-var body={username:u.username,role:r.value,apps:appPickValue("euApps")};if(p.value)body.password=p.value;
+function userSave(i){var u=(ST.USERS||[])[i];if(!u)return;var p=$("euPass");var r=$("euRole");
+var own=isOwner();
+if(!own){
+if(!p||!p.value){toast("请填写新密码（至少 6 位）","err");return}
+if(p.value.length<6){toast("密码至少 6 位","err");return}
+}
+var body;
+if(own){if(!p||!r)return;body={username:u.username,role:r.value,apps:appPickValue("euApps")};if(p.value)body.password=p.value}
+else{body={username:u.username,password:p.value}}
 api("/api/users/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(res){
 if(!res||!res.ok){toast((res&&res.error)||"保存失败","err");return}
 // 改的是自己的账号：服务端已踢掉当前会话，重新登录后刷新整页
-if(ST.ME&&ST.ME.username===u.username){toast("已保存，请重新登录");setTimeout(function(){location.reload()},900);return}
+if(ST.ME&&ST.ME.username===u.username){toast("已保存，请用新密码重新登录");setTimeout(function(){location.reload()},1200);return}
 toast("已保存 "+u.username+" 的修改");refreshUsers()}).catch(function(){toast("网络错误","err")})}
 function confirmUserDel(i){var u=(ST.USERS||[])[i];if(!u)return;cm();
 var h='<div class="overlay" onclick="if(event.target===this)cm()"><div class="modal" style="text-align:center;--modal-min-w:340px"><p style="margin:var(--space-2) 0 var(--space-3);font-size:var(--font-title);font-weight:600">删除账号</p><p style="color:var(--mut);font-size:var(--font-body);margin-bottom:var(--space-5)">确定删除账号 <b>'+esc(u.username)+'</b>（'+roleName(u.role)+'）？该账号会被立即踢下线且无法再登录。</p><div style="display:flex;gap:var(--space-2);justify-content:center"><button onclick="userDel('+i+')" style="background:var(--err)">删除</button><button class="secondary" onclick="cm()">取消</button></div></div></div>';
@@ -335,7 +344,7 @@ $("appc").innerHTML=h}
 function row(k,v){return'<div class=row><span class=k>'+esc(k)+'</span><span class=v>'+v+"</span></div>"}
 function fp(t){var a=ST.cur;if(!a)return;api("/api/files").then(function(f){var l=(f&&f[t])||[];if(!l.length){toast("未检测到"+t.toUpperCase()+"文件","err");return}
 var h='<div class="overlay" onclick="if(event.target===this)cm()"><div class="modal"><h3 class="section-title" style="margin-bottom:var(--space-2)">选择 '+t.toUpperCase()+" 文件</h3>";(l||[]).forEach(function(x){var z=x.size>1e6?(x.size/1e6).toFixed(1)+" MB":Math.max(1,Math.round(x.size/1e3))+" KB";h+='<div class="file-item" role="button" tabindex="0" data-type="'+t+'" data-path="'+esc(x.path)+'" onclick="pick(this)"><span class="fname">'+esc(x.name)+'</span><span class="muted">'+z+"</span></div>"});h+='<div style="margin-top:var(--space-2);text-align:right"><button class="secondary" onclick="cm()">取消</button></div></div></div>';var d=document.createElement("div");d.innerHTML=h;document.body.appendChild(d.firstElementChild)})}
-function pick(el){var t=el.dataset.type,p=el.dataset.path;var inp=$(t==="aab"?"paab":"papk");inp.value=p;cm();toast("已选: "+p.split("/").pop());if(ST.cur)autoMeta(p,ST.cur.id,t)}
+function pick(el){var t=el.dataset.type,p=el.dataset.path;var inp=$(t==="aab"?"paab":"papk");inp.value=p;cm();toast("已选: "+p.split(/[\\/]/).pop());if(ST.cur)autoMeta(p,ST.cur.id,t)}
 function selBuild(t){var inp=document.createElement("input");inp.type="file";inp.accept=t==="aab"?".aab":".apk";inp.onchange=function(){if(!inp.files||!inp.files[0])return;onFileChosen(t,inp.files[0])};inp.click()}
 function onFileChosen(t,file){if(!ST.cur){return}busy(true);lg("上传 "+(t==="aab"?"AAB":"APK")+": "+file.name+" …");
 var fd=new FormData();fd.append("type",t);fd.append("file",file);

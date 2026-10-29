@@ -273,6 +273,7 @@ class QQAdapter(StoreAdapter):
         note = ""
         review_msg = ""
         audit = None
+        reviewing_names: List[str] = []
         try:
             st = self._api("/query_app_update_status", {"pkg_name": package_name, "app_id": app_id})
             audit = st.get("audit_status")
@@ -282,10 +283,17 @@ class QQAdapter(StoreAdapter):
             except (TypeError, ValueError):
                 audit = None
             if audit == 1:
-                # 仅真正审核中才进 REVIEWING（统一版本归类约定；
-                # 该接口不返回待审版本号，故 reviewing 列表为空，由审核状态文字表达）
+                # 该接口不返回待审版本号，用本地最近一次成功提审的版本补上，
+                # 否则分享图/看板的「审核中」只有一句文案、看不到版本号
                 state = AuditState.REVIEWING
                 note = "应用更新审核中"
+                if local_release:
+                    lv_name = str(local_release.get("version_name") or "")
+                    lv_code = local_release.get("version_code")
+                    if lv_name and lv_code not in (None, ""):
+                        reviewing_names = [f"{lv_name}（{lv_code}）"]
+                    elif lv_name or lv_code not in (None, ""):
+                        reviewing_names = [str(lv_name or lv_code)]
             elif audit == 2:
                 state = AuditState.REJECTED
                 note = ("审核未通过：" + reason) if reason else "审核未通过"
@@ -319,6 +327,7 @@ class QQAdapter(StoreAdapter):
             self.platform, package_name, state,
             live_version_names=live_names,
             live_version_codes=live_codes,
+            reviewing_version_names=reviewing_names,
             audit_note=note,
             review_message=review_msg,
             checked_at=utcnow_iso(),

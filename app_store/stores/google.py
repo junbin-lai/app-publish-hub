@@ -110,6 +110,9 @@ class _ProgressFile:
 _COMMIT_MAX_ATTEMPTS = 3
 _COMMIT_RETRY_DELAY = 8  # 秒，第 n 次重试等待 n 倍
 
+# edit 被 Google 删除（大包上传耗时过长导致 edit 过期，或被其他会话的新 edit 取代）时的报错特征
+_EDIT_GONE_MARK = "This Edit has been deleted"
+
 
 class GoogleAdapter(StoreAdapter):
     platform = Platform.GOOGLE
@@ -215,6 +218,10 @@ class GoogleAdapter(StoreAdapter):
         auth_http = AuthorizedHttp(scoped, http=http)
         return build("androidpublisher", "v3", http=auth_http, cache_discovery=False)
 
+    def _insert_edit(self, service, package: str) -> str:
+        """新建 edit 并返回 edit_id（创建新 edit 会自动删除该应用此前的 edit）。"""
+        return service.edits().insert(body={}, packageName=package).execute()["id"]
+
     def publish(self, release: Release, dry_run: bool = False) -> SubmitResult:
         if not release.aab_path and not release.apk_path:
             raise StoreError("发布前请提供 aab_path（Google 推荐）或 apk_path")
@@ -227,8 +234,7 @@ class GoogleAdapter(StoreAdapter):
 
         service = self._service(release.package_name)
         package = release.package_name
-        edit = service.edits().insert(body={}, packageName=package).execute()
-        edit_id = edit["id"]
+        edit_id = self._insert_edit(service, package)
         release_notes = release.whatsnew or release.release_notes or ""
         # 多语言更新说明：中文 / 英文（英文留空回退中文；商店端对其他语言默认回退英文）
         l10n = (release.metadata or {}).get("release_notes_l10n") or {}
@@ -273,6 +279,7 @@ class GoogleAdapter(StoreAdapter):
                 # 每次重试重建 _ProgressFile（文件偏移需归零）
                 uploaded = None
                 last_err: Optional[Exception] = None
+                recreated = False
                 for attempt in range(3):
                     pf = _ProgressFile(str(path), fs, pc)
                     try:
@@ -281,8 +288,24 @@ class GoogleAdapter(StoreAdapter):
                             headers={"Content-Type": mime, "Content-Length": str(fs)},
                         )
                         if resp.status != 200:
+                            body = (content.decode("utf-8", "replace")
+                                    if isinstance(content, (bytes, bytearray)) else str(content))
+                            if _EDIT_GONE_MARK in body and not recreated:
+                                # 大包上传太慢（本次 230MB 传了 33 分钟）或被其他会话的新 edit
+                                # 取代，Google 会把 edit 删掉；重建 edit 后再传一次
+                                recreated = True
+                                edit_id = self._insert_edit(service, package)
+                                upload_url = (
+                                    f"https://androidpublisher.googleapis.com/upload/androidpublisher/v3/"
+                                    f"applications/{package}/edits/{edit_id}/{upload_path}?uploadType=media"
+                                )
+                                last_err = StoreError(
+                                    f"Google Play 上传失败: HTTP {resp.status}: {body[:300]}")
+                                if scb:
+                                    scb("Google edit 已失效（上传过久或被其他会话取代），重建 edit 后重新上传…")
+                                continue
                             raise StoreError(
-                                f"Google Play 上传失败: HTTP {resp.status}: {content[:300]}")
+                                f"Google Play 上传失败: HTTP {resp.status}: {body[:300]}")
                         uploaded = json.loads(content)
                         break
                     except StoreError:
@@ -301,20 +324,26 @@ class GoogleAdapter(StoreAdapter):
                     raise StoreError(f"Google Play 上传失败（重试 3 次仍失败）: {last_err}")
             else:
                 # 无进度回调时走 googleapiclient 标准 upload
-                if is_aab:
-                    uploaded = (
-                        service.edits().bundles().upload(
-                            packageName=package, editId=edit_id,
+                def _std_upload(edit_id_: str):
+                    if is_aab:
+                        return service.edits().bundles().upload(
+                            packageName=package, editId=edit_id_,
                             media_body=str(path), media_mime_type=mime,
                         ).execute(num_retries=self._upload_retries)
-                    )
-                else:
-                    uploaded = (
-                        service.edits().apks().upload(
-                            packageName=package, editId=edit_id,
-                            media_body=str(path), media_mime_type=mime,
-                        ).execute(num_retries=self._upload_retries)
-                    )
+                    return service.edits().apks().upload(
+                        packageName=package, editId=edit_id_,
+                        media_body=str(path), media_mime_type=mime,
+                    ).execute(num_retries=self._upload_retries)
+
+                try:
+                    uploaded = _std_upload(edit_id)
+                except Exception as e:
+                    if _EDIT_GONE_MARK not in str(e):
+                        raise
+                    edit_id = self._insert_edit(service, package)
+                    if scb:
+                        scb("Google edit 已失效（上传过久或被其他会话取代），重建 edit 后重新上传…")
+                    uploaded = _std_upload(edit_id)
             if scb:
                 scb("上传完成 (versionCode " + str(uploaded.get("versionCode") or "") + ")")
             version_code = uploaded.get("versionCode") or release.version_code
@@ -376,6 +405,11 @@ class GoogleAdapter(StoreAdapter):
                 except TaskKilledError:
                     raise
                 except Exception as e:
+                    if _EDIT_GONE_MARK in str(e):
+                        # 到提交这一步 edit 已失效，没法在不重传安装包的情况下续上，直接给明确指引
+                        raise StoreError(
+                            "Google play edit 已失效（提交前被删除/取代），安装包已上传但未提交，"
+                            "请重新点击发布（会新建 edit 并重新上传）") from e
                     if not self._is_retryable_commit(e) or attempt == _COMMIT_MAX_ATTEMPTS - 1:
                         raise
                     delay = _COMMIT_RETRY_DELAY * (attempt + 1)

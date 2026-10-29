@@ -24,6 +24,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+import requests
+
 from . import board_config
 from .base import StoreError
 
@@ -931,3 +933,258 @@ def notify_publish_finished(task: Dict[str, Any], app_name: str) -> str:
     except Exception as e:
         _log(f"飞书通知发送失败: {e}")
         return "failed"
+
+
+# ---- 发布历史写入飞书电子表格 ----
+#
+# board.json feishu.sheet 配置：
+#   {"wiki_token": "QjAl..."}          # 电子表格 wiki 链接末段（需 wiki:node:read + sheets:spreadsheet）
+#   {"spreadsheet_token": "ARvT..."}   # 或直接给电子表格 token（二选一，优先 spreadsheet_token）
+#   {"sheets": {"kkhome": "70aa40"}}   # 可选：app_id → 工作表 id 显式映射，覆盖按名称匹配
+#
+# 结构：电子表格的每个工作表（标签页）对应一个应用，表名 = 应用名
+# （匹配忽略大小写/空格/括号，如工作表「凯迪仕智能」匹配应用「凯迪仕智能 (Kaadas Smart)」）。
+# 启动时自动补齐缺失的工作表；首次写入自动补表头，之后每次发布追加一行。
+# 列：应用 / 版本 / 结果 / 成功平台 / 失败明细 / 操作者 / 结束时间
+
+_BITABLE_API = "https://open.feishu.cn/open-apis"
+_feishu_token_cache: Dict[str, Any] = {"token": "", "exp": 0.0}
+_SHEET_HEADER = ["应用", "版本", "结果", "成功平台", "失败明细", "操作者", "结束时间"]
+_BITABLE_TIMEOUT = 20
+
+
+def _sheet_config(fs: Dict[str, Any]) -> Dict[str, Any]:
+    sc = fs.get("sheet")
+    return sc if isinstance(sc, dict) else {}
+
+
+def _tenant_token(fs: Dict[str, Any]) -> str:
+    now = time.time()
+    if _feishu_token_cache["token"] and now < _feishu_token_cache["exp"]:
+        return _feishu_token_cache["token"]
+    r = requests.post(
+        f"{_BITABLE_API}/auth/v3/tenant_access_token/internal",
+        json={"app_id": fs.get("app_id", ""), "app_secret": fs.get("app_secret", "")},
+        timeout=_BITABLE_TIMEOUT)
+    data = r.json()
+    token = str(data.get("tenant_access_token") or "")
+    if not token:
+        raise StoreError(f"获取 tenant_access_token 失败: {data.get('msg') or data}")
+    _feishu_token_cache.update(token=token, exp=now + 3600)
+    return token
+
+
+def _feishu_get(fs: Dict[str, Any], path: str, **params) -> Dict[str, Any]:
+    r = requests.get(f"{_BITABLE_API}{path}", params=params or None,
+                     headers={"Authorization": "Bearer " + _tenant_token(fs)},
+                     timeout=_BITABLE_TIMEOUT)
+    data = r.json()
+    if data.get("code") != 0:
+        raise StoreError(f"飞书开放接口失败 code={data.get('code')} msg={data.get('msg')}")
+    return data.get("data") or {}
+
+
+def _feishu_post(fs: Dict[str, Any], path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    r = requests.post(f"{_BITABLE_API}{path}", json=body,
+                      headers={"Authorization": "Bearer " + _tenant_token(fs)},
+                      timeout=_BITABLE_TIMEOUT)
+    data = r.json()
+    if data.get("code") != 0:
+        raise StoreError(f"飞书开放接口失败 code={data.get('code')} msg={data.get('msg')}")
+    return data.get("data") or {}
+
+
+def _resolve_spreadsheet_token(fs: Dict[str, Any], sc: Dict[str, Any]) -> str:
+    if sc.get("spreadsheet_token"):
+        return str(sc["spreadsheet_token"])
+    wiki_token = str(sc.get("wiki_token") or "")
+    if not wiki_token:
+        return ""
+    node = _feishu_get(fs, "/wiki/v2/spaces/get_node", token=wiki_token).get("node") or {}
+    if node.get("obj_type") not in ("sheet",):
+        raise StoreError(f"wiki 节点不是电子表格: obj_type={node.get('obj_type')}")
+    return str(node.get("obj_token") or "")
+
+
+def _sheet_list(fs: Dict[str, Any], token: str) -> List[tuple]:
+    """返回 [(工作表名, sheet_id)]。"""
+    data = _feishu_get(fs, f"/sheets/v3/spreadsheets/{token}/sheets/query")
+    return [(str(s.get("title") or ""), str(s.get("sheet_id") or ""))
+            for s in data.get("sheets") or [] if s.get("sheet_id")]
+
+
+def _sheet_first_row(fs: Dict[str, Any], token: str, sheet_id: str) -> List[Any]:
+    """读工作表第一行的值（用于判断是否需要补表头）。
+
+    空白行 API 会返回 [None, None, ...]（不是空数组），这种也算「没有表头」。
+    """
+    try:
+        data = _feishu_get(fs, f"/sheets/v2/spreadsheets/{token}/values/{sheet_id}!A1:G1")
+    except Exception:
+        return []
+    vr = data.get("valueRange") or {}
+    rows = vr.get("values") or []
+    row = list(rows[0]) if rows else []
+    if not any(str(v or "").strip() for v in row):
+        return []
+    return row
+
+
+def _sheet_append(fs: Dict[str, Any], token: str, sheet_id: str,
+                  rows: List[List[Any]]) -> None:
+    # range 的行数必须 >= 写入行数，否则飞书报 90202（rows of value > range）
+    rng = f"{sheet_id}!A1:G{max(1, len(rows))}"
+    _feishu_post(fs, f"/sheets/v2/spreadsheets/{token}/values_append",
+                  {"valueRange": {"range": rng, "values": rows}})
+
+
+def _sheet_create(fs: Dict[str, Any], token: str, title: str, index: int = 0) -> str:
+    """新建工作表，返回 sheet_id。"""
+    data = _feishu_post(fs, f"/sheets/v2/spreadsheets/{token}/sheets_batch_update", {
+        "requests": [{"addSheet": {"properties": {"title": title, "index": index}}}],
+    })
+    replies = data.get("replies") or []
+    props = ((replies[0] or {}).get("addSheet") or {}).get("properties") or {}
+    return str(props.get("sheetId") or "")
+
+
+def _norm_name(s: str) -> str:
+    return re.sub(r"[\s（）()\-_·.·]+", "", str(s or "").lower())
+
+
+def _match_sheet(target: str, sheets: List[tuple]) -> str:
+    """工作表名 ↔ 应用名匹配：先精确（归一化相等），再唯一包含；多个匹配放弃。"""
+    norm = _norm_name(target)
+    if not norm:
+        return ""
+    for name, sid in sheets:
+        if _norm_name(name) == norm:
+            return sid
+    contains = [sid for name, sid in sheets
+                if _norm_name(name) and (_norm_name(name) in norm or norm in _norm_name(name))]
+    if len(contains) == 1:
+        return contains[0]
+    if len(contains) > 1:
+        _log(f"电子表格：应用「{target}」匹配到多个工作表，跳过（可在 board.json feishu.sheet.sheets 显式指定）")
+    return ""
+
+
+def _sheet_pick(sc: Dict[str, Any], sheets: List[tuple], app_id: str, app_name: str) -> str:
+    """选目标工作表：显式 sheets 映射 > 工作表名匹配应用名。"""
+    explicit = (sc.get("sheets") or {}).get(app_id)
+    if explicit:
+        return str(explicit)
+    return _match_sheet(app_name, sheets)
+
+
+def sheet_sync(app_names: List[str]) -> str:
+    """启动时同步：为每个应用补齐同名工作表（已存在不动）。返回结果描述（供日志）。"""
+    path = _ENV["board_config_path"]
+    fs = board_config.feishu_config(path)
+    if not (fs.get("app_id") and fs.get("app_secret")):
+        return "skip:no_credentials"
+    sc = _sheet_config(fs)
+    if not (sc.get("spreadsheet_token") or sc.get("wiki_token")):
+        return "skip:not_configured"
+    try:
+        token = _resolve_spreadsheet_token(fs, sc)
+        if not token:
+            return "skip:not_configured"
+        sheets = _sheet_list(fs, token)
+        created = 0
+        for name in app_names:
+            if not name or _match_sheet(name, sheets):
+                continue
+            sid = _sheet_create(fs, token, name, index=len(sheets) + created)
+            if sid:
+                created += 1
+                _log(f"电子表格：已创建工作表「{name}」")
+        if created:
+            sheets = _sheet_list(fs, token)
+        _log(f"电子表格同步完成：{len(sheets)} 个工作表（本次新建 {created} 个）")
+        return f"ok:sheets={len(sheets)},created={created}"
+    except Exception as e:
+        _log(f"电子表格同步失败: {e}")
+        return f"failed:{e}"
+
+
+
+def _status_word(task: Dict[str, Any]) -> str:
+    if task.get("status") == "killed":
+        return "已停止"
+    scen = classify_publish_outcome(task)
+    return {"all_success": "成功", "partial_success": "部分失败",
+            "failed": "失败", "draft_only": "仅存草稿"}.get(scen, str(task.get("status") or ""))
+
+
+def _publish_values(task: Dict[str, Any], app_name: str) -> Dict[str, str]:
+    results = task.get("results") or []
+    errors = task.get("errors") or []
+    ok_plats = [PLATFORM_NAMES.get(r.get("platform"), r.get("platform"))
+                for r in results if r.get("ok")]
+    bad = list(errors)
+    bad += [{"platform": r.get("platform"), "message": r.get("message") or "未成功"}
+            for r in results if not r.get("ok")]
+    vname = str(task.get("version_name") or "")
+    vcode = task.get("version_code")
+    version = f"{vname} ({vcode})" if vname and vcode else (vname or str(vcode or ""))
+    return {
+        "应用": app_name,
+        "版本": version,
+        "结果": _status_word(task),
+        "成功平台": "、".join(ok_plats) or "—",
+        "失败明细": "\n".join(
+            f"{PLATFORM_NAMES.get(b.get('platform'), b.get('platform'))}: {_clip(b.get('message') or b.get('error'))}"
+            for b in bad[:8]) or "—",
+        "操作者": str(task.get("user") or ""),
+        "结束时间": str(task.get("finished_at") or ""),
+    }
+
+
+def _sheet_row(task: Dict[str, Any], app_name: str) -> List[Any]:
+    """按表头顺序生成一行数据。"""
+    values = _publish_values(task, app_name)
+    return [values[h] for h in _SHEET_HEADER]
+
+
+def sheet_add_record(task: Dict[str, Any], app_id: str, app_name: str) -> str:
+    """发布任务结束后往飞书电子表格对应工作表追加一行（应在独立线程调用）。
+
+    返回值口径与 notify_publish_finished 一致：
+    "sent" 已写入；"failed" 写入失败；"skip:原因" 按规则/配置跳过（不打步骤日志）。
+    dry-run 不写；找不到目标工作表时跳过（工作名需与应用名匹配）。
+    """
+    path = _ENV["board_config_path"]
+    fs = board_config.feishu_config(path)
+    if not (fs.get("app_id") and fs.get("app_secret")):
+        return "skip:no_credentials"
+    sc = _sheet_config(fs)
+    if not (sc.get("spreadsheet_token") or sc.get("wiki_token")):
+        return "skip:not_configured"
+    if task.get("dry_run"):
+        return "skip:dry_run"
+    for attempt in range(3):  # 瞬时网络错误重试 2 次
+        try:
+            token = _resolve_spreadsheet_token(fs, sc)
+            if not token:
+                return "skip:not_configured"
+            sheet_id = _sheet_pick(sc, _sheet_list(fs, token), app_id, app_name)
+            if not sheet_id:
+                return "skip:no_sheet"
+            rows: List[List[Any]] = []
+            if not _sheet_first_row(fs, token, sheet_id):
+                rows.append(_SHEET_HEADER)
+            rows.append(_sheet_row(task, app_name))
+            _sheet_append(fs, token, sheet_id, rows)
+            _log(f"发布历史已写入电子表格（{app_name} v{task.get('version_name') or '?'}）")
+            return "sent"
+        except requests.RequestException as e:
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+                continue
+            _log(f"电子表格写入失败（网络，重试 3 次后放弃）: {e}")
+            return "failed"
+        except Exception as e:
+            _log(f"电子表格写入失败: {e}")
+            return "failed"
+    return "failed"

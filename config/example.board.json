@@ -31,6 +31,11 @@
       "failed": true,
       "killed": false,
       "draft_only": false
+    },
+    "_sheet说明": "可选：发布完成后自动把该次发布追加到飞书电子表格（每个应用一个工作表，表名与应用名对应即可自动匹配，启动时自动补齐缺失工作表）。wiki_token 取电子表格 wiki 链接末段（也可换填 spreadsheet_token）；sheets 可选，app_id→工作表 id 显式映射覆盖自动匹配。需在开放平台给应用开通 wiki:node:read 与 sheets:spreadsheet 权限，并把应用添加为该表格协作者。",
+    "sheet": {
+      "wiki_token": "",
+      "sheets": {}
     }
   }
 }

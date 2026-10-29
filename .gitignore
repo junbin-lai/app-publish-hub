@@ -49,6 +49,9 @@ docs/开放平台API能力需求与调研.md
 # AI 代理指引文件（本地使用，不入库）
 AGENTS.md
 
+# Windows 部署包（脚本+压缩包，只给 Windows 机器用，不入库）
+deploy/
+
 # 本地审查文档（不入库）
 docs/bug修复清单.md
 docs/代码审查报告.md

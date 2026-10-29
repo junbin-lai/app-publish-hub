@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 from typing import Any, Dict, List, Optional
 
 from ..base import StoreAdapter, StoreError
@@ -42,6 +43,13 @@ def _file_md5(path: str) -> str:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _to_int(v: Any) -> Optional[int]:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
 
 
 class XiaomiAdapter(StoreAdapter):
@@ -143,6 +151,34 @@ class XiaomiAdapter(StoreAdapter):
         email = cred.get("email") or ""
         password = cred.get("password") or ""
 
+        # 提交前预检：小米对「同版本重复提交」会直接拒绝（result=-31
+        # 「当前状态不允许进行此操作」），提前判定并跳过，避免把
+        # 「已在审核中 / 已上线」误记成发布失败，也不用白传一次大包。
+        # 注意：dev/query 只保证能看到「已上架」版本，部分账号下审核中的版本
+        # 可能查不到，查不到时按未知处理、继续正常提交（不误拦）。
+        want_code = _to_int(release.version_code)
+        if want_code is not None:
+            info: Dict[str, Any] = {}
+            try:
+                info = (self.query_status(release.package_name).raw or {}).get("packageInfo") or {}
+            except Exception as e:
+                print(f"小米提交前预检失败（继续正常提交）: {e}", file=sys.stderr)
+            sub_code = _to_int(info.get("versionCode"))
+            online_code = _to_int(info.get("onlineVersionCode"))
+            reason = ""
+            if sub_code == want_code:
+                if online_code == want_code:
+                    reason = "该版本已在线上，无需重复提交"
+                elif online_code is None or online_code < want_code:
+                    reason = "同版本已在审核中，跳过重复提交"
+            if reason:
+                if scb: scb(f"小米预检：{reason}")
+                return SubmitResult(
+                    platform=self.platform, ok=True,
+                    message=f"小米: {release.version_name or want_code}（versionCode {want_code}）{reason}",
+                    state=AuditState.SUBMITTED, raw={"precheck": info},
+                )
+
         try:
             synchro_type = int(release.metadata.get("synchroType", 1)) if release.metadata else 1
         except (TypeError, ValueError) as e:
@@ -230,10 +266,16 @@ class XiaomiAdapter(StoreAdapter):
         if scb: scb("小米发布完成")
         # 小米 push 成功码以文档明确的 result=0 为准（其余历史兼容码已收窄，避免误判成功）
         ok = payload.get("result") in (0, "0")
+        msg = str(payload.get("msg") or payload.get("message") or "")
+        if not ok and str(payload.get("result")) == "-31":
+            # 小米侧状态限制，只给一句笼统提示；实测最常见是同一版本已在审核中
+            msg = (msg or "当前状态不允许进行此操作") + \
+                "（小米侧状态限制：同一版本已在审核中/重复提交、应用已下线或尚未首次发布时无法提交更新，" \
+                "请以小米开放平台后台状态为准）"
         return SubmitResult(
             platform=self.platform,
             ok=ok,
-            message=f"小米: {payload.get('msg') or payload}",
+            message=f"小米: {msg or payload}",
             state=AuditState.SUBMITTED if ok else AuditState.UNKNOWN,
             raw=payload,
         )

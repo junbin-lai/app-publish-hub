@@ -27,7 +27,9 @@ def load_credentials(path: str) -> Dict[str, Any]:
     p = Path(path).expanduser()
     try:
         mode = p.stat().st_mode
-        if mode & (stat.S_IRWXG | stat.S_IRWXO):
+        # Windows 下 stat 固定返回 0o666（没有 POSIX 权限位，chmod 600 也无意义），
+        # 不加 os.name 判断会每次加载都刷一条误报警告进日志
+        if os.name == "posix" and mode & (stat.S_IRWXG | stat.S_IRWXO):
             print(f"警告: 凭证文件 {p} 可被 group/other 访问，建议 chmod 600", file=sys.stderr)
     except OSError:
         pass  # 无法获取权限信息时跳过（如部分 Windows 环境）

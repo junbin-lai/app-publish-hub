@@ -9,7 +9,7 @@
       GET /resource/v1/app/info(查询)
 """
 # flake8: noqa
-import hashlib, hmac, json, os, time, datetime as _dt
+import hashlib, hmac, json, os, sys, time, datetime as _dt
 from typing import Any, Dict, List, Optional
 
 from ..base import StoreAdapter, StoreError
@@ -257,7 +257,8 @@ class OPPOAdapter(StoreAdapter):
         print(f"OPPO app/upd 响应: {json.dumps(payload, ensure_ascii=False)[:800]}", file=sys.stderr)
         task_id = str((payload.get("data") or {}).get("task_id") or "")
         confirmed = self._confirm_submitted(
-            release.package_name, params.get("version_code"), params.get("version_name"), task_id, scb)
+            release.package_name, params.get("version_code"), params.get("version_name"), task_id, scb,
+            (release.metadata or {}).get("_kill_cb"))
         if confirmed is False:
             raise StoreError(
                 "OPPO 提交未被受理：接口返回成功，但现网版本未更新为 "
@@ -271,11 +272,12 @@ class OPPOAdapter(StoreAdapter):
     _SUBMIT_CONFIRM_INTERVAL = 10
 
     def _confirm_submitted(self, pkg: str, version_code: Any, version_name: Any,
-                           task_id: str, scb=None) -> Optional[bool]:
+                           task_id: str, scb=None, kill_cb=None) -> Optional[bool]:
         """提交后回查 app/info，确认 OPPO 是否真的受理了本次版本。
 
         返回 True=已确认受理；False=窗口内确认未受理；None=回查失败（无法确认，不当失败处理）。
         task_id 非空说明已生成任务，直接视为受理。
+        kill_cb：每轮回查前检查停止请求，避免停止后还空跑满 180 秒窗口。
         """
         if task_id:
             return True
@@ -287,6 +289,8 @@ class OPPOAdapter(StoreAdapter):
             scb("确认 OPPO 是否受理本次提交…")
         waited = 0
         while True:
+            if kill_cb:
+                kill_cb()  # 用户已停止：立刻中断回查（只读查询，无副作用）
             try:
                 data = (self._request("GET", "/resource/v1/app/info",
                                       data={"pkg_name": pkg}, pkg=pkg).get("data") or {})
