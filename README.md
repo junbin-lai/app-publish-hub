@@ -15,7 +15,7 @@
 - **8 大平台全覆盖**：发布 + 查询（Apple 已实现 App Store Connect 提交审核，**实验性、未经真机实测**，默认仅用于查询已上架版本）
 - **统一发布模型**：一个应用配置 + 新 APK/AAB + 更新说明 → 选平台 → 一键发布
 - **平台多选发布**：Web 看板可按勾选平台发布（排除 Apple），支持「全部平台」
-- **定时上线**：小米/OPPO/vivo/荣耀/华为 均支持定时发布
+- **定时上线**：小米/OPPO/vivo/荣耀/华为/腾讯应用宝 均支持定时发布（应用宝限提审 6 小时后、30 天内）
 - **审核通过后立即上线**：华为定时上架版本可一键改为立即上架（on-shelf-time 接口），看板「待发布」状态卡提供「立即上线」按钮（其余平台官方未提供该 API）
 - **自动复用资料**：OPPO 更新版本时自动沿用现网图标/简介/截图，无需重传
 - **三态查询**：Google Play 区分「已上架 / 草稿未送审 / 审核中」
@@ -25,6 +25,7 @@
 - **发布历史永久保留**：不按时间/条数自动清理，只能由 owner 主动清空（接口需二次确认，且清空前自动多份备份）；服务运行日志 `tmpdoc/web-8090.log` 保留 60 天，超期归档删除
 - **局域网访问**：`./start-dashboard.sh lan` 一键开放给同网段同事（强制先配好登录账号；不配账号拒绝启动）
 - **飞书群机器人**：发布完成自动往群里发结果卡片 + 状态分享图；群成员 @机器人 即可查任一应用各平台状态（回复分享图）。自建应用 + 长连接，无需公网 IP（接入步骤见 [Web 看板手册](docs/WEB_GUIDE.md)）
+- **发布历史同步飞书电子表格**：每次发布结束自动追加一行到对应应用的工作表（一个应用一个标签页，启动时自动补齐），方便直接看历史/做统计
 - **dry-run 安全校验**：不真实提交。注意行为差异：Google 会真实创建 edit 后立即删除、应用宝会调只读接口查线上版本，其余平台纯本地校验（见 [架构说明](docs/ARCHITECTURE.md)）
 
 ## 平台能力一览
@@ -158,7 +159,7 @@ appstore publish --app example-app --all --credentials config/credentials.json
 # 指定版本信息覆盖目录配置
 appstore publish --app example-app --platform xiaomi --version-name "1.0.1" --version-code 101 --release-notes "修复问题" --credentials config/credentials.json
 
-# 定时上线（小米/OPPO/vivo/荣耀/华为）
+# 定时上线（小米/OPPO/vivo/荣耀/华为/腾讯应用宝）
 appstore publish --app example-app --platform xiaomi --online-time "2026-09-01 10:00" --credentials config/credentials.json
 
 # 查询某 App 所有平台状态

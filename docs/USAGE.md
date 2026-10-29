@@ -4,7 +4,8 @@
 - [README](../README.md) — 总览与快速开始
 - [CREDENTIALS_GUIDE.md](CREDENTIALS_GUIDE.md) — 凭证配置（含多应用）
 - [CLI_REFERENCE.md](CLI_REFERENCE.md) — 命令行全部参数
-- [WEB_GUIDE.md](WEB_GUIDE.md) — Web 看板使用 + HTTP API
+- [USER_GUIDE.md](USER_GUIDE.md) — App 发布中枢 · 用户操作说明（使用者视角，可直接发给同事）
+- [WEB_GUIDE.md](WEB_GUIDE.md) — App 发布中枢 · 使用手册（管理员版：部署配置 + HTTP API）
 - [STORE_ACCESS.md](STORE_ACCESS.md) — 各平台接口清单
 
 ## 最常用操作

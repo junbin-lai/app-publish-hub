@@ -60,6 +60,9 @@ _FONT_CANDIDATES = [
     ("/System/Library/Fonts/STHeiti Light.ttc", 0),
     ("/System/Library/Fonts/Supplemental/Songti.ttc", 0),
     ("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", 0),
+    ("C:/Windows/Fonts/msyh.ttc", 0),                 # Windows 微软雅黑
+    ("C:/Windows/Fonts/simhei.ttf", 0),               # Windows 黑体
+    ("C:/Windows/Fonts/simsun.ttc", 0),               # Windows 宋体
     ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),  # Linux 兜底
 ]
 _BOLD_CANDIDATES = [
@@ -68,6 +71,8 @@ _BOLD_CANDIDATES = [
     ("/System/Library/Fonts/STHeiti Medium.ttc", 0),
     ("/System/Library/Fonts/Supplemental/Songti.ttc", 1),
     ("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", 0),
+    ("C:/Windows/Fonts/msyhbd.ttc", 0),                # Windows 微软雅黑粗体
+    ("C:/Windows/Fonts/simhei.ttf", 0),
     ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0),
 ]
 

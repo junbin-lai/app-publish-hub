@@ -356,7 +356,17 @@ def cmd_web(args: argparse.Namespace) -> int:
                       board_config_path=args.board_config)
 
 
+def _force_utf8_output() -> None:
+    """Windows 控制台默认 GBK，打印 emoji/中文会抛 UnicodeEncodeError 直接退出进程。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    _force_utf8_output()
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
