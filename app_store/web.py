@@ -34,6 +34,7 @@ import uuid
 import webbrowser
 from http import cookies as http_cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
@@ -179,6 +180,122 @@ def _cleanup_unreferenced_builds(catalog) -> Dict[str, Any]:
 
 
 _BODY_MAX_BYTES = 10 * 1024 * 1024  # JSON 请求体上限（上传接口走 multipart，不受此限）
+
+
+_GOOGLE_PROBE_TIMEOUT = 12  # 秒；凭证校验时换取 Google access token 的最长等待
+
+
+def _cred_file_refs(creds: Dict[str, Any], key: str) -> List[Tuple[str, str]]:
+    """收集某平台 credentials 里引用的本地凭证文件，返回 [(用途说明, 文件路径)]。"""
+    cfg = creds.get(key) or {}
+    refs: List[Tuple[str, str]] = []
+    if key == "google":
+        apps = cfg.get("apps") or {}
+        for name, v in (apps or {"": cfg}).items():
+            p = v.get("service_account_json") if isinstance(v, dict) else v
+            if isinstance(p, str) and p:
+                refs.append((f"google.{name or '默认'} service_account_json", p))
+    elif key == "xiaomi":
+        apps = cfg.get("apps") or {}
+        for name, v in (apps or {"": cfg}).items():
+            p = v.get("public_key") if isinstance(v, dict) else ""
+            if p:
+                refs.append((f"xiaomi.{name or '默认'} public_key", str(p)))
+    elif key == "apple":
+        p = (cfg.get("api_key") or {}).get("private_key_path") or ""
+        if p:
+            refs.append(("apple api_key.private_key_path", str(p)))
+    return refs
+
+
+def _app_names(creds: Dict[str, Any], key: str) -> List[str]:
+    """返回某平台 credentials.apps 里配置的包名列表。"""
+    apps = (creds.get(key) or {}).get("apps")
+    if isinstance(apps, dict):
+        return [str(k) for k in apps.keys()]
+    return []
+
+
+def _check_cred_files(creds: Dict[str, Any], key: str) -> Tuple[List[str], int]:
+    """校验引用的凭证文件是否存在、可读、格式正确。返回 (问题列表, 可读文件数)。"""
+    problems: List[str] = []
+    ok_count = 0
+    seen = set()
+    for label, raw in _cred_file_refs(creds, key):
+        p = Path(raw).expanduser()
+        if str(p) in seen:
+            continue
+        seen.add(str(p))
+        if not p.is_file():
+            problems.append(f"{label} 指向的文件不存在: {p}")
+            continue
+        try:
+            data = p.read_bytes()
+        except OSError as e:
+            problems.append(f"{label} 无法读取: {e}")
+            continue
+        if key == "google":
+            try:
+                info = json.loads(data.decode("utf-8"))
+            except Exception as e:  # noqa: BLE001
+                problems.append(f"{label} 不是合法 JSON: {e}")
+                continue
+            missing = [f for f in ("client_email", "private_key", "token_uri") if not info.get(f)]
+            if missing:
+                problems.append(f"{label} 缺少字段: {'/'.join(missing)}")
+                continue
+        elif key == "xiaomi":
+            try:
+                from cryptography.x509 import load_pem_x509_certificate
+
+                load_pem_x509_certificate(data, None)
+            except ImportError:
+                pass
+            except Exception as e:  # noqa: BLE001
+                problems.append(f"{label} 不是合法 X509 公钥证书: {e}")
+                continue
+        ok_count += 1
+    return problems, ok_count
+
+
+def _probe_google_auth(creds: Dict[str, Any]) -> List[str]:
+    """用服务账号换取一次 access token（只读、无副作用），验证私钥有效且能连上 Google。"""
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2 import service_account
+    except ImportError:
+        return []  # 依赖缺失已由 adapter.check() 报出
+    info: Optional[Dict[str, Any]] = None
+    for _, raw in _cred_file_refs(creds, "google"):
+        try:
+            p = Path(raw).expanduser()
+            if p.is_file():
+                info = json.loads(p.read_text(encoding="utf-8"))
+                break
+        except Exception:  # noqa: BLE001
+            continue
+    if not info:
+        return []  # 文件相关问题已在 _check_cred_files 里报出
+    result: Dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            cred = service_account.Credentials.from_service_account_info(
+                info, scopes=["https://www.googleapis.com/auth/androidpublisher"]
+            )
+            cred.refresh(Request())
+            result["ok"] = True
+        except Exception as e:  # noqa: BLE001
+            result["error"] = str(e)[:300]
+
+    th = threading.Thread(target=_run, daemon=True)
+    th.start()
+    th.join(_GOOGLE_PROBE_TIMEOUT)
+    if th.is_alive():
+        return [f"Google 鉴权超时（>{_GOOGLE_PROBE_TIMEOUT} 秒），检查网络或代理"]
+    if result.get("error"):
+        return [f"Google 鉴权失败: {result['error']}"]
+    return []
 
 
 def _read_body(handler: BaseHTTPRequestHandler) -> Dict[str, Any]:
@@ -1668,10 +1785,29 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             try:
                 adapter = get_adapter(key, creds)
-                problems = adapter.check()
-                rows.append({"platform": key, "ok": not problems, "message": "；".join(problems) if problems else ""})
+                problems = list(adapter.check())
             except StoreError as e:
                 rows.append({"platform": key, "ok": False, "message": str(e)})
+                continue
+            notes = []
+            names = _app_names(creds, key)
+            if names:
+                shown = "、".join(names[:3]) + ("…" if len(names) > 3 else "")
+                notes.append(f"覆盖 {len(names)} 个应用（{shown}）")
+            file_problems, file_ok = _check_cred_files(creds, key)
+            problems.extend(file_problems)
+            if file_ok and not file_problems:
+                notes.append(f"{file_ok} 个凭证文件可读")
+            if key == "google" and not problems:
+                net_problems = _probe_google_auth(creds)
+                problems.extend(net_problems)
+                if not net_problems:
+                    notes.append("鉴权成功")
+            rows.append({
+                "platform": key,
+                "ok": not problems,
+                "message": "；".join(problems) if problems else " · ".join(notes),
+            })
         return _json_response(self, {"validated": rows})
 
 
