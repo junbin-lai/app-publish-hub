@@ -134,8 +134,8 @@ a:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--acc);outline-of
 </head>
 <body>
 <header>
-  <div style="display:flex;align-items:center;gap:var(--space-3)"><h1>App发布中枢</h1><span class="muted" id="cfg"></span></div>
-  <div class=hdr-right><span class="muted" id="fsInfo"></span><span class="muted" id="meInfo"></span><button class="secondary sm hide" id="userBtn" onclick="showUserModal()">用户管理</button><button class="secondary sm hide" id="logoutBtn" onclick="logout()">退出登录</button><button class="secondary sm" id="themeBtn" onclick="toggleTheme()">深色</button><button class=secondary sm onclick=ld()>刷新</button><button class=secondary sm onclick=validateAll()>校验凭证</button></div>
+  <div style="display:flex;align-items:center;gap:var(--space-3)"><h1>App发布中枢</h1></div>
+  <div class=hdr-right><span class="muted" id="fsInfo"></span><span class="muted" id="meInfo"></span><button class="secondary sm hide" id="userBtn" onclick="showUserModal()">用户管理</button><button class="secondary sm hide" id="logoutBtn" onclick="logout()">退出登录</button><button class="secondary sm" id="themeBtn" onclick="toggleTheme()">深色</button><button class=secondary sm onclick=validateAll()>校验凭证</button></div>
 </header>
 <div class=layout>
   <aside id=sb></aside>
@@ -275,7 +275,7 @@ function setTheme(t){document.documentElement.dataset.theme=t;try{localStorage.s
 function toggleTheme(){setTheme(document.documentElement.dataset.theme==="dark"?"light":"dark")}
 setTheme(function(){try{return localStorage.getItem("dshTheme")||"light"}catch(e){return "light"}}());
 function stat(ch){var m={published:"已上架",reviewing:"审核中",pending:"待发布",draft:"草稿",submitted:"已提交",rejected:"已拒绝",unknown:"未知"};return m[ch]||ch}
-function ld(){Promise.all([api("/api/apps"),api("/api/platforms"),api("/api/config"),api("/api/tasks"),api("/api/session")]).then(function(rs){ST.apps=rs[0].apps||[];ST.cats=rs[0].categories||[];ST.platforms=rs[1]||[];$("cfg").textContent="凭证: "+(rs[2].credentials||"");ST.FS=(rs[2]&&rs[2].feishu)||null;ST.ME={username:rs[4]&&rs[4].username,role:rs[4]&&rs[4].role,apps:(rs[4]&&rs[4].apps!==undefined)?rs[4].apps:null,auth_enabled:!!(rs[4]&&rs[4].auth_enabled)};renderMeBox();ST.HIST=(rs[3]&&rs[3].history)||[];renderSb();if(ST.apps.length){if(!ST.cur||!ST.apps.find(function(a){return a.id===ST.cur.id}))sa(ST.apps[0].id);else{renderMain();renderHistory(appHistory(5))}}
+function ld(){Promise.all([api("/api/apps"),api("/api/platforms"),api("/api/config"),api("/api/tasks"),api("/api/session")]).then(function(rs){ST.apps=rs[0].apps||[];ST.cats=rs[0].categories||[];ST.platforms=rs[1]||[];ST.FS=(rs[2]&&rs[2].feishu)||null;ST.ME={username:rs[4]&&rs[4].username,role:rs[4]&&rs[4].role,apps:(rs[4]&&rs[4].apps!==undefined)?rs[4].apps:null,auth_enabled:!!(rs[4]&&rs[4].auth_enabled)};renderMeBox();ST.HIST=(rs[3]&&rs[3].history)||[];renderSb();if(ST.apps.length){if(!ST.cur||!ST.apps.find(function(a){return a.id===ST.cur.id}))sa(ST.apps[0].id);else{renderMain();renderHistory(appHistory(5))}}
 // === 恢复进行中的发布任务：发布在服务端后台线程运行，刷新/关闭重进页面都不影响。
 // 页面加载时若存在 running 任务，自动切到该应用并继续显示进度。
 // 多应用并行发布：各应用任务相互独立（后端同应用并发有拦截），侧栏带「运行中」角标。===
@@ -617,7 +617,25 @@ function dapk(){var a=ST.cur,s=ST.GBSEL;if(!a||!s)return;var label=(s.version_na
 // Content-Disposition: attachment 响应会直接进入下载列表，不弹新页、不被拦截
 var f=document.createElement('iframe');f.style.display='none';f.src=u;f.onload=function(){try{var b=f.contentDocument&&f.contentDocument.body;var d=b?b.innerText:"";if(d){var j=JSON.parse(d);if(j&&!j.ok){lg("下载失败: "+(j.error||"服务端错误"),"err");toast(j.error||"下载失败","err");document.body.removeChild(f)}}}catch(e){}};document.body.appendChild(f);
 toast("已开始下载"+mb+"，进度看浏览器下载列表")}).catch(function(e){lg("下载预检异常: "+e,"err");toast("预检异常","err")})}
-function validateAll(){lg("== 校验凭证 ==");api("/api/validate").then(function(r){(r.validated||[]).forEach(function(x){lg("["+x.platform+"] "+(x.ok?"OK":"ERROR")+(x.message?" "+x.message:""),x.ok?"ok":"err")})})}
+function validateAll(){
+  var ov=document.createElement("div");
+  ov.innerHTML='<div class="overlay" onclick="if(event.target===this)cm()"><div class="modal" style="--modal-min-w:420px"><h3 class="section-title">凭证校验</h3>'
+    +'<div id="vres" class="result" style="margin-top:var(--space-2)"><div class="muted">正在校验…</div></div>'
+    +'<div class="muted" style="margin-top:var(--space-3)">Google 会真实换取一次 access token（只读，不改线上数据）；其他平台校验依赖与凭证文件是否可读</div>'
+    +'<div style="margin-top:var(--space-3);text-align:right"><button class="secondary" onclick="cm()">关闭</button></div></div></div>';
+  document.body.appendChild(ov.firstElementChild);
+  api("/api/validate").then(function(r){
+    var box=$("vres");if(!box)return;
+    var rows=(r&&r.validated)||[];
+    if(!rows.length){box.innerHTML='<div class="muted">没有可校验的平台（credentials.json 未配置任何平台）</div>';return}
+    box.innerHTML=rows.map(function(x){
+      var mark=x.ok?"✓ 通过":"✗ "+(x.message||"未通过");
+      return '<div class="'+(x.ok?"ok":"err")+'">'+esc(x.platform)+'：'+esc(mark)+(x.ok&&x.message?'<span class="muted"> '+esc(x.message)+'</span>':'')+'</div>';
+    }).join("");
+  }).catch(function(e){
+    var box=$("vres");if(box)box.innerHTML='<div class="err">校验请求失败: '+esc(e)+'</div>';
+  })
+}
 document.addEventListener("keydown",function(e){if(e.key!=="Enter"&&e.key!==" ")return;var t=e.target;if(!t||!t.classList)return;if(t.classList.contains("app-item")){e.preventDefault();sa(t.dataset.id)}else if(t.classList.contains("file-item")){e.preventDefault();pick(t)}else if(t.classList.contains("platform-chip")){e.preventDefault();selTPlat(t.dataset.plat)}});
 ld();
 </script>
