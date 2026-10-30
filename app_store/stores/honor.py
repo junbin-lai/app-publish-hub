@@ -40,6 +40,11 @@ _FILE_TYPE_APK = 100
 # token 请求重试：荣耀 IAM 偶发连接超时（国内网络抖动），单次失败不该让整个发布任务失败
 _TOKEN_MAX_ATTEMPTS = 3
 _TOKEN_CONNECT_TIMEOUT = 15  # 秒，连接阶段；读阶段沿用 30s
+# OpenAPI 读写超时拆分为 (连接, 读取)：连接阶段单独限时，超时只说明请求未发出，
+# 可安全重试（原实现用标量 120，连接阶段空等 2 分钟后直接失败）
+_API_CONNECT_TIMEOUT = 20
+_API_READ_TIMEOUT = 120
+_API_CONNECT_ATTEMPTS = 3
 
 
 def _parse_release_time(ts: str) -> Optional[datetime.datetime]:
@@ -129,7 +134,10 @@ class HonorAdapter(StoreAdapter):
         tok = self._token(pkg)
         url = _OPENAPI + path
         try:
-            resp = req.get(url, params=params, headers={"Authorization": f"Bearer {tok}"}, timeout=60)
+            resp = self._send_with_retry(
+                lambda: req.get(url, params=params, headers={"Authorization": f"Bearer {tok}"},
+                                timeout=(_API_CONNECT_TIMEOUT, _API_READ_TIMEOUT)),
+                path)
         except (req.ConnectionError, req.Timeout) as e:
             raise StoreError(f"荣耀 {path} 网络错误: {e}")
         try:
@@ -146,8 +154,11 @@ class HonorAdapter(StoreAdapter):
         tok = self._token(pkg)
         url = _OPENAPI + path
         try:
-            resp = req.post(url, json=body, params=query,
-                            headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}, timeout=120)
+            resp = self._send_with_retry(
+                lambda: req.post(url, json=body, params=query,
+                                 headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
+                                 timeout=(_API_CONNECT_TIMEOUT, _API_READ_TIMEOUT)),
+                path)
         except (req.ConnectionError, req.Timeout) as e:
             raise StoreError(f"荣耀 {path} 网络错误: {e}")
         try:
@@ -157,6 +168,20 @@ class HonorAdapter(StoreAdapter):
         if d.get("code") != 0:
             raise StoreError(f"荣耀 {path}: {d.get('msg', d)}")
         return d
+
+    @staticmethod
+    def _send_with_retry(do_request, path: str):
+        """连接阶段超时/连不上才重试（此时请求必然未发出，重试无副作用）；
+        读取阶段超时（ConnectTimeout 之外）不重试，避免重复提交审核等写操作。"""
+        import requests as req
+        for attempt in range(1, _API_CONNECT_ATTEMPTS + 1):
+            try:
+                return do_request()
+            except req.ConnectTimeout as e:
+                if attempt == _API_CONNECT_ATTEMPTS:
+                    raise
+                print(f"荣耀 {path} 连接超时，第 {attempt} 次重试: {e}", file=sys.stderr)
+                time.sleep(2 ** attempt)
 
     def _get_app_id(self, pkg: str) -> int:
         d = self._get(pkg, "/get-app-id", {"pkgName": pkg})

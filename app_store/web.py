@@ -1017,6 +1017,10 @@ def query_app_status(app_id: str, platform: str = "all") -> Tuple[List[Dict[str,
                 elif key == "qq":
                     # 应用宝：带上本地最近提审记录，用于定时发布「待发布」推断
                     s = adapter.query_status(package, local_release=_latest_local_release(app_id, "qq"))
+                elif key == "xiaomi":
+                    # 小米：dev/query 不返回提审版本与审核状态，用本地最近提审版本
+                    # 与线上版本号比对推断「审核中」（提审版本 > 线上版本）
+                    s = adapter.query_status(package, local_release=_latest_local_release(app_id, "xiaomi"))
                 else:
                     s = adapter.query_status(package)
                 return {
