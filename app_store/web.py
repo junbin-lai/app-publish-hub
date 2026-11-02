@@ -2361,7 +2361,7 @@ def run_server(
         icon=resolve_app_icon,
         apps=lambda: get_catalog(catalog_path).all_apps(),
         board_url=board_url,
-        log=lambda msg: print(f"[飞书] {msg}", flush=True),
+        log=lambda msg: _dlog("飞书", msg),
     )
 
     _load_history()

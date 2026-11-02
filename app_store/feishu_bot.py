@@ -57,6 +57,11 @@ _STATE: Dict[str, Any] = {
     "started": False,
 }
 
+# 事件去重：message_id -> 首次处理时间（飞书重连切换时会重复推送同一事件）
+_DEDUP_TTL = 600  # 秒，超过则允许再次处理（同一 message_id 不会重复推送超过这个时间）
+_DEDUP_SEEN: Dict[str, float] = {}
+_DEDUP_LOCK = threading.Lock()
+
 _MENTION_TOKEN = re.compile(r"@_user_\d+\s*")
 _ALL_WORDS = ("全部", "所有", "all", "全部应用")
 
@@ -665,6 +670,26 @@ def _mentions_all(text: str, mentions) -> bool:
     return False
 
 
+def _claim_message(message_id: str) -> bool:
+    """同一 message_id 只处理一次（跨线程安全）。
+
+    飞书长连接在断线重连切换的瞬间，旧连接未完全释放时会重复推送同一个事件；
+    若不做去重，用户只发一条指令却会收到两套「正在查询… + 状态卡片」。
+    """
+    if not message_id:
+        return True
+    now = time.time()
+    with _DEDUP_LOCK:
+        if len(_DEDUP_SEEN) > 500:  # 顺手清理过期项，避免长期占用内存
+            for k, ts in list(_DEDUP_SEEN.items()):
+                if now - ts > _DEDUP_TTL:
+                    _DEDUP_SEEN.pop(k, None)
+        if message_id in _DEDUP_SEEN:
+            return False
+        _DEDUP_SEEN[message_id] = now
+        return True
+
+
 def _on_message(data) -> None:
     """im.message.receive_v1 事件回调（群 @ 与私聊都会进这里）。"""
     try:
@@ -673,6 +698,11 @@ def _on_message(data) -> None:
             return
         chat_id = msg.chat_id or ""
         message_id = msg.message_id or ""
+        if not _claim_message(message_id):
+            # 飞书长连接在重连切换/网络抖动时会重复推送同一事件，
+            # 不去重会把「正在查询…+状态卡片」整对再回复一遍
+            _log(f"忽略重复推送的事件 message_id={message_id}")
+            return
         chat_type = msg.chat_type or ""
         if (msg.message_type or "") != "text":
             # 非文本消息（表情/图片等）只在群里回应，私聊也提示
@@ -697,7 +727,8 @@ def _on_message(data) -> None:
         except Exception:
             sender_open_id = ""
         at_user_id = sender_open_id if (chat_type and chat_type != "p2p") else ""
-        _log(f"收到指令 chat={chat_id} type={chat_type} text={text!r} 提问者={sender_open_id or '-'}")
+        _log(f"收到指令 mid={message_id or '-'} chat={chat_id} type={chat_type} "
+             f"text={text!r} 提问者={sender_open_id or '-'}")
         # 指令处理可能很慢（查询全平台状态），放线程里跑，不阻塞事件循环
         fs = board_config.feishu_config(_ENV["board_config_path"])
         app_id_key, app_secret = fs.get("app_id", ""), fs.get("app_secret", "")
