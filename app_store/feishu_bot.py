@@ -44,7 +44,7 @@ _ENV: Dict[str, Any] = {
     # apps() -> 应用目录列表（[{id,name,package_name,...}]）
     "apps": None,
     "board_url": "http://127.0.0.1:8090/",
-    # 日志回调 log(msg)（写看板日志区/服务端日志）
+    # 日志回调 log(msg)（写 App发布中枢日志区/服务端日志）
     "log": None,
 }
 
@@ -212,6 +212,15 @@ def _clip(s: str, n: int = 90) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def _show_board_button() -> bool:
+    """通知卡片是否带「打开App发布中枢」按钮（board.json feishu.show_board_button，默认 true）。
+
+    关闭时整块 action 元素不加入卡片，因此不会留空位——卡片内容直接衔接分隔线。
+    """
+    fs = board_config.feishu_config(_ENV["board_config_path"])
+    return bool(fs.get("show_board_button", True))
+
+
 def build_publish_card(task: Dict[str, Any], app_name: str, image_key: str = "") -> Dict[str, Any]:
     """发布结束通知卡片（interactive card JSON）。"""
     status = task.get("status")
@@ -261,12 +270,12 @@ def build_publish_card(task: Dict[str, Any], app_name: str, image_key: str = "")
             "alt": {"tag": "plain_text", "content": "各平台当前状态分享图"},
         })
     url = str(_ENV.get("board_url") or "")
-    if url:
+    if url and _show_board_button():
         elements.append({
             "tag": "action",
             "actions": [{
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "打开看板"},
+                "text": {"tag": "plain_text", "content": "打开App发布中枢"},
                 "type": "primary",
                 "url": url,
             }],
