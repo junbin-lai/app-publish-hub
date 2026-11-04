@@ -10,53 +10,13 @@
 """
 # flake8: noqa
 import hashlib, hmac, json, os, sys, time, datetime as _dt
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from ..base import StoreAdapter, StoreError
 from ..models import AuditState, Platform, Release, SubmitResult, StoreStatus, short_schedule, utcnow_iso
 from ..upload_progress import make_multipart_monitor
 
 _DOMAIN = "https://oop-openapi-cn.heytapmobi.com"
-
-
-def _version_in_payload(data: Any, want_code: str, want_name: str) -> bool:
-    """在 app/info 响应里递归查找目标版本号/名称（新版本可能不在顶层字段）。"""
-    targets = {t for t in (want_code, want_name) if t}
-    if not targets:
-        return False
-
-    def _walk(v: Any) -> bool:
-        if isinstance(v, dict):
-            return any(_walk(x) for x in v.values())
-        if isinstance(v, (list, tuple)):
-            return any(_walk(x) for x in v)
-        if isinstance(v, bool):
-            return False
-        if isinstance(v, (int, float)):
-            return str(v) in targets
-        if isinstance(v, str):
-            return v.strip() in targets
-        return False
-
-    return _walk(data)
-
-
-def _has_pending_audit(data: Dict[str, Any]) -> bool:
-    """app/info 是否显示有版本正在审核中/待发布（此时现网版本尚未更新属正常）。"""
-    def _to_int(v: Any) -> Optional[int]:
-        try:
-            return int(v)
-        except (ValueError, TypeError):
-            return None
-
-    name = str(data.get("audit_status_name") or "") + str(data.get("change_state_name") or "")
-    if "不通过" in name or "驳回" in name:
-        return False
-    for key in ("audit_status", "change_state"):
-        i = _to_int(data.get(key))
-        if i is not None and 0 < i < 111:
-            return True
-    return "审核" in name or "待发布" in name
 
 
 class OPPOAdapter(StoreAdapter):
@@ -295,68 +255,15 @@ class OPPOAdapter(StoreAdapter):
         payload = self._request("POST", "/resource/v1/app/upd", data=params, pkg=release.package_name)
         # 完整记录响应：OPPO 偶发 errno=0 但实际未生成审核任务，靠原文排查
         print(f"OPPO app/upd 响应: {json.dumps(payload, ensure_ascii=False)[:800]}", file=sys.stderr)
-        task_id = str((payload.get("data") or {}).get("task_id") or "")
-        confirmed = self._confirm_submitted(
-            release.package_name, params.get("version_code"), params.get("version_name"), task_id, scb,
-            (release.metadata or {}).get("_kill_cb"))
-        if confirmed is False:
+        data = payload.get("data") or {}
+        # errno=0 只代表请求合法；success 明确为 false 表示业务校验未通过，按失败处理
+        if isinstance(data, dict) and data.get("success") is False:
             raise StoreError(
-                "OPPO 提交未被受理：接口返回成功，但现网版本未更新，且未检测到任何审核中的版本 "
-                f"（目标 {params.get('version_name')}（{params.get('version_code')}）)"
-                f"（响应: {json.dumps(payload, ensure_ascii=False)[:300]}）")
+                f"OPPO 提交被拒绝: {data.get('message') or payload.get('errmsg') or '业务校验未通过'}")
+        task_id = str(data.get("task_id") if isinstance(data, dict) else "")
         return SubmitResult(self.platform, True, f"OPPO: {payload.get('errmsg') or '提交成功'}",
                             remote_reference=task_id,
                             state=AuditState.SUBMITTED, raw=payload)
-
-    _SUBMIT_CONFIRM_TIMEOUT = 180  # 提交后回查窗口（10-20 实测约 2 分钟才生成版本记录）
-    _SUBMIT_CONFIRM_INTERVAL = 10
-
-    def _confirm_submitted(self, pkg: str, version_code: Any, version_name: Any,
-                           task_id: str, scb=None, kill_cb=None) -> Optional[bool]:
-        """提交后回查 app/info，确认 OPPO 是否真的受理了本次版本。
-
-        返回 True=已确认受理；False=窗口内确认未受理；None=回查失败（无法确认，不当失败处理）。
-        task_id 非空说明已生成任务，直接视为受理。
-        kill_cb：每轮回查前检查停止请求，避免停止后还空跑满 180 秒窗口。
-        """
-        if task_id:
-            return True
-        want_code = str(version_code or "")
-        want_name = str(version_name or "")
-        if not want_code and not want_name:
-            return None
-        if scb:
-            scb("确认 OPPO 是否受理本次提交…")
-        waited = 0
-        while True:
-            if kill_cb:
-                kill_cb()  # 用户已停止：立刻中断回查（只读查询，无副作用）
-            try:
-                data = (self._request("GET", "/resource/v1/app/info",
-                                      data={"pkg_name": pkg}, pkg=pkg).get("data") or {})
-            except Exception as e:
-                print(f"OPPO 提交回查失败（无法确认，按已提交处理）: {e}", file=sys.stderr)
-                return None
-            cur_code = str(data.get("version_code") or "")
-            cur_name = str(data.get("version_name") or "")
-            if (want_code and cur_code == want_code) or (not want_code and want_name and cur_name == want_name):
-                return True
-            # 新版本可能出现在其他字段（如待审版本），整包扫描目标版本号/名称
-            if _version_in_payload(data, want_code, want_name):
-                print("OPPO 提交已受理：响应中已出现目标版本", file=sys.stderr)
-                return True
-            # 现网版本只在审核通过后才更新：只要 app/info 显示有版本处于
-            # 审核中/待发布，就说明本次提交已进入审核流程，不应判为未受理
-            if _has_pending_audit(data):
-                print(f"OPPO 提交已受理：现网仍为 {cur_name}({cur_code})，但已有版本处于审核流程中"
-                      f"（目标 {want_name}({want_code})）", file=sys.stderr)
-                return True
-            if waited >= self._SUBMIT_CONFIRM_TIMEOUT:
-                print(f"OPPO 提交未生效：现网仍为 {cur_name}({cur_code})，本次为 {want_name}({want_code})",
-                      file=sys.stderr)
-                return False
-            time.sleep(self._SUBMIT_CONFIRM_INTERVAL)
-            waited += self._SUBMIT_CONFIRM_INTERVAL
 
     def query_status(self, package_name: str) -> StoreStatus:
         payload = self._request("GET", "/resource/v1/app/info", data={"pkg_name": package_name}, pkg=package_name)
