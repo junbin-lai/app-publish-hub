@@ -10,6 +10,7 @@ build/
 
 # 凭证/私钥/密钥（禁止入库）
 **/credentials.json
+**/credentials.*.json
 **/*.credentials.json
 !config/example.credentials.json
 凭证/
