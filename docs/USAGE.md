@@ -11,7 +11,7 @@
 ## 最常用操作
 
 ```bash
-# 启动看板
+# 启动 App发布中枢
 appstore web --port 8090 --credentials config/credentials.json --catalog apps/catalog.json
 
 # 发布（--platform 每次只接受一个平台；多平台需逐平台执行，或用 --all）

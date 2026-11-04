@@ -5,7 +5,7 @@
 #   ./start-dashboard.sh bg       后台运行（关终端不停，日志 tmpdoc/web-8090.log）
 #   ./start-dashboard.sh lan      局域网模式前台运行（绑 0.0.0.0，须已配置登录账号）
 #   ./start-dashboard.sh lanbg    局域网模式后台运行
-#   ./start-dashboard.sh stop     停止看板
+#   ./start-dashboard.sh stop     停止 App发布中枢
 #   ./start-dashboard.sh status   查看运行状态
 
 cd "$(dirname "$0")" || exit 1   # 切到项目根目录，config/ apps/ 相对路径才正确
@@ -49,7 +49,7 @@ rotate_log() {
   find tmpdoc -maxdepth 1 -name 'web-8090-*.log' -mtime +$LOG_KEEP_DAYS -delete 2>/dev/null
 }
 
-# 局域网模式安全闸：没有登录账号就拒绝启动（看板能执行真实发布，不能裸奔在网内）
+# 局域网模式安全闸：没有登录账号就拒绝启动（App发布中枢能执行真实发布，不能裸奔在网内）
 check_lan_auth() {
   if ! .venv/bin/python -c "import json,sys;cfg=json.load(open('$BOARD'));users=cfg.get('users') or [];sys.exit(0 if any(isinstance(u,dict) and u.get('username') and (u.get('password') or u.get('password_sha256')) for u in users) else 1)" 2>/dev/null; then
     echo "✘ 局域网模式需要先配置登录账号："
@@ -63,9 +63,9 @@ case "$1" in
   stop)
     PID=$(running_pid)
     if [ -n "$PID" ]; then
-      kill "$PID" && echo "已停止看板 (PID $PID)"
+      kill "$PID" && echo "已停止 App发布中枢 (PID $PID)"
     else
-      echo "看板未在运行"
+      echo "App发布中枢未在运行"
     fi
     ;;
   status)
@@ -78,19 +78,19 @@ case "$1" in
     ;;
   bg)
     if [ -n "$(running_pid)" ]; then
-      echo "看板已在运行 (PID $(running_pid))，如需重启先执行 $0 stop"
+      echo "App发布中枢已在运行 (PID $(running_pid))，如需重启先执行 $0 stop"
       exit 1
     fi
     mkdir -p tmpdoc
     rotate_log
     nohup .venv/bin/appstore web --port $PORT --credentials $CREDENTIALS --catalog $CATALOG --board-config $BOARD >> "$LOG" 2>&1 &
     echo "已后台启动 (PID $!)，日志: $LOG"
-    echo "看板地址: http://127.0.0.1:$PORT"
+    echo "访问地址: http://127.0.0.1:$PORT"
     ;;
   lan|lanbg)
     check_lan_auth
     if [ -n "$(running_pid)" ]; then
-      echo "看板已在运行 (PID $(running_pid))，如需重启先执行 $0 stop"
+      echo "App发布中枢已在运行 (PID $(running_pid))，如需重启先执行 $0 stop"
       exit 1
     fi
     IP=$(lan_ip)
@@ -112,7 +112,7 @@ case "$1" in
     ;;
   "")
     if [ -n "$(running_pid)" ]; then
-      echo "看板已在运行 (PID $(running_pid))，如需重启先执行 $0 stop"
+      echo "App发布中枢已在运行 (PID $(running_pid))，如需重启先执行 $0 stop"
       exit 1
     fi
     exec .venv/bin/appstore web --port $PORT --credentials $CREDENTIALS --catalog $CATALOG --board-config $BOARD

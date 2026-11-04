@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 try:
     from PIL import Image, ImageDraw, ImageFont
     _PIL_OK = True
-except ImportError:  # Pillow 未安装时分享图功能不可用，但不影响看板其他功能
+except ImportError:  # Pillow 未安装时分享图功能不可用，但不影响 App发布中枢其他功能
     _PIL_OK = False
 
 # 与前端 drawShareCard 一致的设计常量

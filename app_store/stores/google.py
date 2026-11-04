@@ -25,7 +25,7 @@ _UPLOAD_TIMEOUT = 300  # 秒，单次 socket 读/写超时（按次生效：健�
                      # 只在网络完全卡死时触发断开重试；过长会让卡死的上传挂半小时，按需在凭证里覆盖）
 _UPLOAD_MAX_RETRIES = 5  # 上传失败自动重试次数
 
-# 商店页面「真正已上架版本」探测结果缓存：避免看板/飞书反复查询时每次抓页面。
+# 商店页面「真正已上架版本」探测结果缓存：避免 App发布中枢/飞书反复查询时每次抓页面。
 # key=package_name, value=(expire_monotonic, version)。失败结果也缓存（短 TTL），
 # 防止网络抖动时每次都等 30s 超时。
 _PAGE_VERSION_CACHE: Dict[str, tuple] = {}
@@ -33,10 +33,10 @@ _PAGE_VERSION_TTL_SECONDS = 300
 _PAGE_VERSION_FAIL_TTL_SECONDS = 60
 
 # 新 lifecycle 接口的失败可观测性：静默退回旧推断时，把失败原因记录在此，
-# 看板状态卡用 audit_note 提示「新接口不可用，状态为旧推断」。
+# App发布中枢状态卡用 audit_note 提示「新接口不可用，状态为旧推断」。
 # key=package_name, value={"reason": str, "at": monotonic, "http_status": int|None}
 _LIFECYCLE_FAIL: Dict[str, dict] = {}
-_LIFECYCLE_FAIL_TTL_SECONDS = 1800  # 看板提示保留 30 分钟
+_LIFECYCLE_FAIL_TTL_SECONDS = 1800  # App发布中枢提示保留 30 分钟
 # 同一原因的 stderr 日志限频（10 分钟一条），避免反复查询时刷屏
 _LIFECYCLE_LAST_LOG: Dict[str, float] = {}
 _LIFECYCLE_LOG_THROTTLE = 600
@@ -70,7 +70,7 @@ def _record_lifecycle_failure(package_name: str, reason: str,
 
 
 class _ProgressFile:
-    """文件包装：httplib2 分块读文件时回调当前已传大小 → 看板实时显示上传进度。"""
+    """文件包装：httplib2 分块读文件时回调当前已传大小 → App发布中枢实时显示上传进度。"""
 
     def __init__(self, path: str, total: int, callback):
         self._f = open(path, "rb")
@@ -354,7 +354,7 @@ class GoogleAdapter(StoreAdapter):
             auto_review = bool((release.metadata or {}).get("auto_review")) or bool(self.credentials.get("auto_review"))
             release_mode = str((release.metadata or {}).get("release_mode") or "staged").lower()
             # 发布方式（勾选「自动送审」时生效）：
-            #   staged = 分阶段发布：inProgress + 百万分之一，审核通过后先放极小比例，再在看板「全量发布」
+            #   staged = 分阶段发布：inProgress + 百万分之一，审核通过后先放极小比例，再在 App发布中枢「全量发布」
             #   full   = 全量发布：completed，审核通过后 Google 自动 100% 上线
             # 不自动送审时仍存草稿（status=draft，需到 Play Console 手动送审）
             if auto_review:
@@ -520,7 +520,7 @@ class GoogleAdapter(StoreAdapter):
         返回 {version_code(str): lifecycle}，lifecycle 取值：
           RELEASE_LIFECYCLE_STATE_DRAFT / _IN_REVIEW / _APPROVED_NOT_PUBLISHED / _PUBLISHED
         任何失败（接口不可用/权限/网络）都返回 {}，由调用方退回旧的 tracks.list 推断；
-        失败原因记入 _LIFECYCLE_FAIL 供看板提示（成功时清除）。
+        失败原因记入 _LIFECYCLE_FAIL 供 App发布中枢提示（成功时清除）。
         """
         try:
             http = self._lifecycle_http(package_name)
@@ -895,12 +895,12 @@ class GoogleAdapter(StoreAdapter):
     # ---- 签名 APK 下载（generatedapks）----
 
     def list_bundle_versions(self, package_name: str) -> List[Dict[str, Any]]:
-        """列出该应用已上传的全部 App Bundle 版本（供看板选择下载签名 APK）。
+        """列出该应用已上传的全部 App Bundle 版本（供 App发布中枢选择下载签名 APK）。
 
         临时 edit 内 bundles.list + tracks.list 合并出每个 versionCode 的轨道/发布状态，
         完成后立即删除 edit（不留痕）。Google API 不提供上传时间与安装人数，
         前端对应列显示占位符；版本名称解析自轨道 release name
-        （本看板发布时写入 "versionCode (versionName)"，Google 自动生成时通常也含版本信息）。
+        （本平台发布时写入 "versionCode (versionName)"，Google 自动生成时通常也含版本信息）。
         """
         service = self._service(package_name)
         try:

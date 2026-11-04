@@ -81,7 +81,7 @@ appstore publish [--app APP_ID] [--platform PLATFORM] [--all]
 # dry-run 验证（始终推荐先跑）
 appstore publish --app example-app --platform xiaomi --dry-run
 
-# 多平台真实发布：逐平台执行（--platform 不支持逗号多选；逗号多选仅 Web 看板 / HTTP API 支持）
+# 多平台真实发布：逐平台执行（--platform 不支持逗号多选；逗号多选仅 App发布中枢 / HTTP API 支持）
 appstore publish --app example-app --platform xiaomi
 appstore publish --app example-app --platform oppo
 appstore publish --app example-app --platform vivo
@@ -130,7 +130,7 @@ appstore --json status --app example-app
 
 ### `web`
 
-启动 Web 可视化看板（推荐日常使用）。
+启动 Web 可视化 App发布中枢（推荐日常使用）。
 
 ```bash
 appstore web [--port PORT] [--host HOST]
@@ -144,7 +144,7 @@ appstore web [--port PORT] [--host HOST]
 | `--host` | 监听地址（默认 127.0.0.1）。绑 `0.0.0.0`（局域网）**必须先在 board.json 配置登录账号**，否则拒绝启动；公网暴露请走 VPN/HTTPS 反代 |
 | `--credentials` | 凭证路径 |
 | `--catalog` | 应用目录路径 |
-| `--board-config` | 看板配置（登录账号/角色 + 飞书机器人，默认 config/board.json；文件不存在 = 无鉴权本机模式） |
+| `--board-config` | App发布中枢配置（登录账号/角色 + 飞书机器人，默认 config/board.json；文件不存在 = 无鉴权本机模式） |
 | `--open` | 自动打开浏览器 |
 
 **示例**

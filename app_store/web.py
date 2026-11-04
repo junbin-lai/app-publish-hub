@@ -1,12 +1,12 @@
-"""Web 可视化看板：应用分类 / 一键发布 / 状态查询。
+"""Web 可视化界面：应用分类 / 一键发布 / 状态查询。
 
 纯标准库实现（http.server），不依赖 Flask/FastAPI。
 启动：appstore web --port 8090 [--host 0.0.0.0] [--board-config config/board.json]
 API：
-  GET  /                      看板页面（未登录时前端显示登录层）
+  GET  /                      App发布中枢页面（未登录时前端显示登录层）
   GET  /api/apps              应用目录（分类+应用）
   GET  /api/platforms         平台注册表
-  GET  /api/config            看板配置信息（含登录/飞书状态）
+  GET  /api/config            App发布中枢配置信息（含登录/飞书状态）
   GET  /api/session           当前登录会话（无需登录）
   GET  /api/share-image       状态分享图 PNG（登录后可用）
   GET  /api/validate          校验凭证（返回 ok 列表）
@@ -214,6 +214,30 @@ def _app_names(creds: Dict[str, Any], key: str) -> List[str]:
     if isinstance(apps, dict):
         return [str(k) for k in apps.keys()]
     return []
+
+
+def _apps_report(configured: List[str], catalog_apps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """按应用目录逐个标注某平台是否已配置凭证。
+
+    前端据此展示「哪些应用配了、哪些没配」，因此不能截断——应用再多也全量返回。
+    credentials 里有、但目录里没有的包名也列出来（标记已配置），避免配置了却看不见。
+    """
+    seen = set()
+    rows: List[Dict[str, Any]] = []
+    for a in catalog_apps:
+        pkg = str(a.get("package_name") or "")
+        if not pkg:
+            continue
+        seen.add(pkg)
+        rows.append({
+            "name": str(a.get("name") or a.get("id") or pkg),
+            "package": pkg,
+            "configured": pkg in configured,
+        })
+    for pkg in configured:
+        if pkg not in seen:
+            rows.append({"name": pkg, "package": pkg, "configured": True})
+    return rows
 
 
 def _check_cred_files(creds: Dict[str, Any], key: str) -> Tuple[List[str], int]:
@@ -1783,21 +1807,27 @@ class Handler(BaseHTTPRequestHandler):
     # ---- 实现 ----
     def _api_validate(self):
         creds = load_credentials(self.credentials_path)
+        try:
+            catalog_apps = self._catalog().all_apps()
+        except Exception:
+            catalog_apps = []
         rows = []
         for key in creds:
             if key not in PLATFORM_VALUES:
                 continue
+            notes = []
             try:
                 adapter = get_adapter(key, creds)
                 problems = list(adapter.check())
             except StoreError as e:
-                rows.append({"platform": key, "ok": False, "message": str(e)})
+                rows.append({
+                    "platform": key,
+                    "ok": False,
+                    "message": str(e),
+                    "publish": key in PUBLISH_PLATFORMS,
+                    "apps": _apps_report(_app_names(creds, key), catalog_apps),
+                })
                 continue
-            notes = []
-            names = _app_names(creds, key)
-            if names:
-                shown = "、".join(names[:3]) + ("…" if len(names) > 3 else "")
-                notes.append(f"覆盖 {len(names)} 个应用（{shown}）")
             file_problems, file_ok = _check_cred_files(creds, key)
             problems.extend(file_problems)
             if file_ok and not file_problems:
@@ -1811,6 +1841,9 @@ class Handler(BaseHTTPRequestHandler):
                 "platform": key,
                 "ok": not problems,
                 "message": "；".join(problems) if problems else " · ".join(notes),
+                # apple 只支持状态查询，不参与发布，前端据此标「查询凭证 / 发布凭证」
+                "publish": key in PUBLISH_PLATFORMS,
+                "apps": _apps_report(_app_names(creds, key), catalog_apps),
             })
         return _json_response(self, {"validated": rows})
 
@@ -2346,15 +2379,15 @@ def run_server(
         raise StoreError(
             "局域网/公网访问必须先开启登录鉴权：请在 config/board.json 配置 users"
             "（模板见 config/example.board.json，说明见 docs/WEB_GUIDE.md），"
-            "再绑定非 127.0.0.1 地址。看板能执行真实发布，不能不开鉴权暴露到网内。"
+            "再绑定非 127.0.0.1 地址。App发布中枢能执行真实发布，不能不开鉴权暴露到网内。"
         )
 
-    # 通知卡片「打开看板」按钮用实际可达地址（绑 0.0.0.0 时取局域网 IP）
+    # 通知卡片「打开App发布中枢」按钮用实际可达地址（绑 0.0.0.0 时取局域网 IP）
     lan_ips = _lan_addresses()
     display_host = host if host not in ("0.0.0.0", "::", "") else (lan_ips[0] if lan_ips else "127.0.0.1")
     board_url = f"http://{display_host}:{port}/"
 
-    # 给飞书机器人注入运行环境（状态查询/图标/应用列表/看板地址）
+    # 给飞书机器人注入运行环境（状态查询/图标/应用列表/访问地址）
     feishu_bot.configure(
         board_config_path=board_config_path,
         query_status=query_app_status,
@@ -2365,7 +2398,7 @@ def run_server(
     )
 
     _load_history()
-    # 启动后异步同步飞书电子表格：为每个应用补齐同名工作表（失败不影响看板启动）
+    # 启动后异步同步飞书电子表格：为每个应用补齐同名工作表（失败不影响 App发布中枢启动）
     def _sync_sheet():
         try:
             names = [str(a.get("name") or a.get("id") or "")
@@ -2386,7 +2419,7 @@ def run_server(
             print(f"   未探测到局域网 IP，请用本机 IP 访问 {port} 端口", flush=True)
     print(f"   凭证: {credentials_path}", flush=True)
     print(f"   目录: {catalog_path}", flush=True)
-    print(f"   看板配置: {board_config_path}（登录鉴权: {'已开启' if auth_on else '未开启（本机直连模式）'}）", flush=True)
+    print(f"   App发布中枢配置: {board_config_path}（登录鉴权: {'已开启' if auth_on else '未开启（本机直连模式）'}）", flush=True)
     if auth_on:
         names = ", ".join(u["username"] + "(" + u["role"] + ")" for u in board_config.list_users(board_config_path))
         print(f"   账号: {names}", flush=True)

@@ -3,7 +3,7 @@
 ## 分层设计
 
 ```
-appstore CLI (cli.py) ── Web 看板 (web.py)
+appstore CLI (cli.py) ── App发布中枢 (web.py)
      |                        |
      v                         v
 Registry (registry.py) -- 按平台名惰性加载适配器
@@ -35,7 +35,7 @@ Registry (registry.py) -- 按平台名惰性加载适配器
 4. 适配器依次：校验凭证 → 上传安装包 → 组装版本信息 → 调平台提交审核接口
 5. 返回 `SubmitResult`；Web 端单任务内各平台**并行**执行（`ThreadPoolExecutor`），不同应用的发布任务彼此独立
 
-## Web 看板的并发与持久化
+## App发布中枢的并发与持久化
 
 - **任务隔离**：`_TASKS` 内存字典 + 每任务后台线程；同应用已有 running 任务时拒绝新发布，不同应用可并行
 - **上传闸门**：进程级 `threading.Semaphore`，跨任务/跨应用限制同时上传安装包的数量

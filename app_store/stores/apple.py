@@ -50,7 +50,7 @@ _BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.
 # App Store Connect API 端点
 _ASC_BASE = "https://api.appstoreconnect.apple.com/v1"
 
-# apps.apple.com 页面版本解析缓存：看板/飞书反复查询时避免每次抓大页面。
+# apps.apple.com 页面版本解析缓存：App发布中枢/飞书反复查询时避免每次抓大页面。
 # key=package_name, value=(expire_monotonic, version)。失败结果也缓存（短 TTL），
 # 防止网络抖动时每次都等 30s 超时。
 _PAGE_VERSION_CACHE: Dict[str, tuple] = {}
@@ -132,7 +132,7 @@ class AppleAdapter(StoreAdapter):
         """带缓存地抓 apps.apple.com 页面版本。
 
         Lookup 的 CDN 缓存可能滞后，页面版本更准；但页面抓取较慢，按包名缓存，
-        成功 5 分钟、失败 1 分钟，避免看板/飞书反复查询时每次都等页面。
+        成功 5 分钟、失败 1 分钟，避免 App发布中枢/飞书反复查询时每次都等页面。
         """
         now = time.monotonic()
         hit = _PAGE_VERSION_CACHE.get(package_name)

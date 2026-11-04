@@ -83,6 +83,14 @@ label{display:block;color:var(--mut);font-size:var(--font-label);margin:var(--sp
 .state.unknown{background:var(--chip-bg);color:var(--mut)}
 .state.killed{background:var(--tint-gray);color:var(--draft-txt)}
 .result{background:var(--console-bg);border:1px solid var(--line);border-radius:var(--radius-md);padding:var(--space-2) var(--space-3);font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:var(--font-caption);line-height:1.6;max-height:220px;overflow-y:auto;color:var(--console-txt)}
+.vrow{border:1px solid var(--line);border-radius:var(--radius-md);padding:var(--space-2) var(--space-3);margin-bottom:var(--space-2)}
+.vrow:last-child{margin-bottom:0}
+.vrow-head{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;font-size:var(--font-body)}
+.vrow-name{font-weight:700;font-family:"SF Mono",ui-monospace,Menlo,monospace}
+.vchips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.vchip{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:var(--radius-pill);border:1px solid var(--line);background:var(--chip-bg);font-size:var(--font-caption);line-height:1.5}
+.vchip.on{border-color:var(--ok);color:var(--ok)}
+.vchip.off{color:var(--mut);border-style:dashed}
 .result div{white-space:pre-wrap;word-break:break-all}
 .result .ok{color:var(--ok)}
 .result .err{color:var(--err)}
@@ -621,9 +629,9 @@ var f=document.createElement('iframe');f.style.display='none';f.src=u;f.onload=f
 toast("已开始下载"+mb+"，进度看浏览器下载列表")}).catch(function(e){lg("下载预检异常: "+e,"err");toast("预检异常","err")})}
 function validateAll(){
   var ov=document.createElement("div");
-  ov.innerHTML='<div class="overlay" onclick="if(event.target===this)cm()"><div class="modal" style="--modal-min-w:420px"><h3 class="section-title">凭证校验</h3>'
-    +'<div id="vres" class="result" style="margin-top:var(--space-2)"><div class="muted">正在校验…</div></div>'
-    +'<div class="muted" style="margin-top:var(--space-3)">Google 会真实换取一次 access token（只读，不改线上数据）；其他平台校验依赖与凭证文件是否可读</div>'
+  ov.innerHTML='<div class="overlay" onclick="if(event.target===this)cm()"><div class="modal" style="--modal-min-w:520px;max-width:min(760px,94vw)"><h3 class="section-title">凭证校验</h3>'
+    +'<div id="vres" style="margin-top:var(--space-2);max-height:62vh;overflow-y:auto"><div class="muted">正在校验…</div></div>'
+    +'<div class="muted" style="margin-top:var(--space-3)">绿色 ✓ = 该应用已配置此平台凭证；灰色虚线 ✗ = 未配置（只影响该应用的该平台，不影响其它平台）。Google 会真实换取一次 access token（只读，不改线上数据）；Apple 凭证仅用于状态查询</div>'
     +'<div style="margin-top:var(--space-3);text-align:right"><button class="secondary" onclick="cm()">关闭</button></div></div></div>';
   document.body.appendChild(ov.firstElementChild);
   api("/api/validate").then(function(r){
@@ -631,8 +639,18 @@ function validateAll(){
     var rows=(r&&r.validated)||[];
     if(!rows.length){box.innerHTML='<div class="muted">没有可校验的平台（credentials.json 未配置任何平台）</div>';return}
     box.innerHTML=rows.map(function(x){
-      var mark=x.ok?"✓ 通过":"✗ "+(x.message||"未通过");
-      return '<div class="'+(x.ok?"ok":"err")+'">'+esc(x.platform)+'：'+esc(mark)+(x.ok&&x.message?'<span class="muted"> '+esc(x.message)+'</span>':'')+'</div>';
+      var apps=x.apps||[];
+      var on=apps.filter(function(a){return a.configured}).length;
+      var head='<div class="vrow-head"><span class="vrow-name">'+esc(x.platform)+'</span>'
+        +'<span class="'+(x.ok?"ok":"err")+'">'+(x.ok?"✓ 通过":"✗ 未通过")+'</span>'
+        +'<span class="muted">'+(x.publish===false?"查询凭证":"发布凭证")+'</span>'
+        +'<span class="muted">已配置 '+on+' / '+apps.length+' 个应用</span></div>';
+      var msg=x.message?'<div class="muted" style="margin-top:4px">'+esc(x.message)+'</div>':'';
+      var chips=apps.map(function(a){
+        return '<span class="vchip '+(a.configured?"on":"off")+'" title="'+esc(a.package)+'">'
+          +(a.configured?"✓ ":"✗ ")+esc(a.name)+'</span>';
+      }).join('');
+      return '<div class="vrow">'+head+msg+(chips?'<div class="vchips">'+chips+'</div>':'')+'</div>';
     }).join("");
   }).catch(function(e){
     var box=$("vres");if(box)box.innerHTML='<div class="err">校验请求失败: '+esc(e)+'</div>';

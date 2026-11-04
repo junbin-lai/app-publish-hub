@@ -1,4 +1,4 @@
-"""看板自身配置（登录账号/权限 + 飞书机器人）的加载与写回。
+"""App发布中枢自身配置（登录账号/权限 + 飞书机器人）的加载与写回。
 
 配置文件 config/board.json（本地私有，gitignore 排除，模板见 example.board.json）：
 
@@ -22,7 +22,7 @@
   publisher（发布员，可发布） / viewer（只读+查询）
 - apps 可选：授权应用 id 列表。缺省该键 = 全部应用（向后兼容）；空列表 [] = 无任何应用；
   owner 恒为全部应用。publisher / viewer 的可见与可发布范围都受 apps 限制。
-- feishu 段缺省时飞书功能整体关闭，不影响看板其他功能
+- feishu 段缺省时飞书功能整体关闭，不影响 App发布中枢其他功能
 - 每次请求都重新读盘，改配置无需重启（飞书长连接除外，需重启生效）
 """
 from __future__ import annotations
@@ -52,7 +52,7 @@ def _read_json(path: str) -> Dict[str, Any]:
 
 
 def load_board_config(path: str) -> Dict[str, Any]:
-    """读取看板配置（文件缺失/损坏时返回空 dict = 全部功能关闭）。"""
+    """读取 App发布中枢配置（文件缺失/损坏时返回空 dict = 全部功能关闭）。"""
     return _read_json(path)
 
 

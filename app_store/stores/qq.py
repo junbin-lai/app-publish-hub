@@ -284,7 +284,7 @@ class QQAdapter(StoreAdapter):
                 audit = None
             if audit == 1:
                 # 该接口不返回待审版本号，用本地最近一次成功提审的版本补上，
-                # 否则分享图/看板的「审核中」只有一句文案、看不到版本号
+                # 否则分享图/App发布中枢的「审核中」只有一句文案、看不到版本号
                 state = AuditState.REVIEWING
                 note = "应用更新审核中"
                 if local_release:
