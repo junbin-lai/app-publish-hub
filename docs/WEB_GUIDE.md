@@ -27,6 +27,10 @@ App发布中枢是日常最直观的操作界面，支持选择应用、查看�
 
 （也可先 `source .venv/bin/activate` 再敲 `appstore web ...`，用完 `deactivate` 退出虚拟环境）
 
+**本地调试想临时不启动飞书机器人（同时也不要求登录）**：把 `--board-config` 指向一个不存在的精简配置即可，
+例如 `--board-config /tmp/board.debug.json`。若想保留账号、只是不要机器人：复制 `config/board.json` 到
+`tmpdoc/board.debug.json`（`tmpdoc/` 已 gitignore），删掉 `feishu` 整段后用该文件启动。改配置后需重启生效。
+
 打开浏览器 → `http://127.0.0.1:8090`
 
 ## 登录与权限（config/board.json）
@@ -44,6 +48,22 @@ App发布中枢默认**无登录、仅本机 127.0.0.1 访问**（和以前一�
   ],
   "session_days": 14,
   "upload_concurrency": 2
+}
+```
+
+**更新说明默认文案**（可选，`release_notes.defaults`）：配置后「更新说明」的三个语言 tab 会自动预填，
+不配置则输入框留空。键统一写 `zh-CN` / `zh-TW` / `en-US`，提交时自动映射平台语言码
+（Google 用 `zh-TW`，Apple 用 `zh-Hant`）：
+
+```json
+{
+  "release_notes": {
+    "defaults": {
+      "zh-CN": "1. 修复已知问题，优化产品使用体验；",
+      "zh-TW": "1. 修復已知問題並優化產品體驗；",
+      "en-US": "1. Fix known issues and optimize product experience;"
+    }
+  }
 }
 ```
 
@@ -136,6 +156,9 @@ json.dump(merged, open("config/tasks_history.json", "w"), ensure_ascii=False, in
   确需外网访问请走 VPN（如 Tailscale/WireGuard）或带 HTTPS+鉴权的反向代理。
 
 ## 飞书群机器人（发布通知 + @查询）
+
+> 可选功能：`board.json` 里没有 `feishu.app_id` / `feishu.app_secret`（或没有 feishu 段）时，
+> 机器人长连接不会启动，控制台打印「飞书机器人: 未配置」，其余功能不受影响。
 
 ### 一、为什么是「自建应用机器人」而不是群 webhook 机器人
 
@@ -264,8 +287,9 @@ dry-run 校验、被手动停止、只存草稿等场景默认静默。判定口
 1. **顶部**：当前选中应用信息（名称 / 包名 / 版本）；右上角「用户管理」（owner，可增删改账号与应用授权）/「我的账号」（其他角色，只能查看并修改自己的密码）
 2. **三列卡片**
    - **应用信息**：包名、versionName、versionCode（未选包时版本显示 "-"）
-   - **构建产物**：AAB/APK **选择文件上传**（区分 .aab / .apk，选后自动解析版本/包名）
-   - **发布**：版本名、版本号（选包后自动回填）、**平台多选复选框**、更新说明、**定时上线时间选择**、发布/查询按钮
+   - **构建产物**：**Android 信息**（AAB/APK **选择文件上传**，区分 .aab / .apk，选后自动解析版本/包名）+ **华为 Harmony 信息**（应用配置了 `huawei_harmony_package` 才出现：Harmony 包名、构建版本下拉、「拉取版本」按钮）
+   - **发布**：版本名、版本号（选包后自动回填）、**平台多选复选框**、更新说明（中文 / 繁體 / English 三个 tab）、**定时上线时间选择**、发布/查询按钮
+   - 同时上传 AAB 与 APK 时，Android 信息的版本行下方自动比对 versionName / versionCode：一致显示绿色；不一致显示黄色差异提示（**只提示，不阻止分别发布**——Google 与国内平台可能用不同的包）
 3. **平台状态**：各平台已上架版本、审核状态、草稿版本（三行）
 4. **日志**：发布任务进度与结果（按应用独立；切回正在发布的应用会自动恢复其进度）
 
@@ -273,24 +297,50 @@ dry-run 校验、被手动停止、只存草稿等场景默认静默。判定口
 
 1. 左侧选择目标 App → 右侧加载应用信息
 2. 在「构建产物」点击 **"选择…"** 上传 APK/AAB → 自动解析版本名、versionCode、包名校验并回填发布表单
-3. 确认：
+3. 要发华为 Harmony 时：在「华为 Harmony 信息」点 **「拉取版本」**（从 AGC 软件包管理拉取已上传构建），
+   在下拉里选要提审的版本；**留空 = 华为只发 Android 包**
+4. 确认：
    - **勾选发布平台**（可多选，不含 Apple）
-   - **更新说明**
+   - **更新说明**（三个语言 tab，已按 `release_notes.defaults` 预填，可手工修改）
    - **定时上线**（选时间；留空=立即上线。支持：小米/OPPO/vivo/荣耀/华为/腾讯应用宝；应用宝限提审 6 小时后、30 天内）
-4. 点 **"发布"** → 后台异步执行
-5. 右侧日志区显示每个平台的进度
-6. 点 **"查询状态"** 刷新版本信息
+5. 点 **"发布"** → 后台异步执行
+6. 右侧日志区显示每个平台的进度
+7. 点 **"查询状态"** 刷新版本信息
 
 ### 平台多选注意
 
 - 复选框全选/清空按钮在平台列表下方
 - Apple 不参与发布（仅查询）
+- **华为 Harmony**：勾选华为并在 Harmony 下拉里选了版本 → 同一任务做两步（有 APK 时先发 Android 包提审，再提交 Harmony）；
+  只发 Harmony（不传 APK）时华为只提交 AGC 上已有的版本
+- 选了 Harmony 版本必须勾选华为；只勾华为但既没 APK 也没选版本会被拦截并提示
 - 勾选多个平台时，各平台**并行**执行（不再串行等待）；但**安装包上传有全局并发上限**（见下节），超出的上传会排队
 - 「查询全部平台」是**并发**执行的，总耗时约等于最慢的那个平台（不再是各平台相加）；
   苹果的商店页面版本按包名缓存 5 分钟，避免每次查询都抓一次大页面
 - 荣耀、应用宝上传 APK 遇到连接中断/超时会**自动重试**（每次从头重传，最多 3 次，指数退避）；荣耀获取 token 也会重试 3 次（2s/4s 退避）
 - Google Play 上传完成后**直接 commit**（不再空等 processing 轮询）；commit 遇到 Google 5xx 时退避重试 3 次（8s/16s），4xx 与超时不重试，避免无意义等待
 - OPPO 提交后**不回查现网版本**：以接口 `errno=0` 返回为受理成功（实测后台生成审核记录有数分钟延迟，回查会把已受理的提交误判为失败）；`app/upd` 原始响应会写入服务日志，便于排查接口参数变更公告
+
+### 华为 Harmony 发布（AGC 已上传构建）
+
+Harmony 的正式包由开发同学先上传到 AGC「软件包管理」，App发布中枢只负责**选择版本并提交审核**，
+不会重新上传安装包。
+
+前提配置：
+
+1. `config/credentials.json` 的 `huawei.apps` 为 **Harmony 包名**单独配一条，带 `app_kind: "harmony"` 与该应用的 `app_id`
+2. `apps/catalog.json` 的应用里配置 `huawei_harmony_package`（Harmony 包名，与 Android 的 `package_name` 不同）
+
+发布行为：
+
+- 下拉列出 `版本名 / versionCode / 构建版本`，按 versionCode 倒序；点「拉取版本」强制刷新
+- 提交前用 `app-info` 核对 AGC 当前版本，与所选版本不一致直接报错——`app-submit` 只能提交当前版本，接口不支持指定 packageId
+- 提交参数：`releaseType=1`（全网）+ `releasePhase=0`；填了「定时上线」会带 `releaseTime`（+0800），留空则审核通过立即上架
+- 与 Android 华为包的关系：
+  - 有 APK + 选了版本 → Android 包上传提审 + Harmony 提交审核，两步都做
+  - 没有 APK + 选了版本 → 只提交 Harmony（不需要本机安装包）
+  - 有 APK + 没选版本 → 只发 Android 包
+  - 两步中一步失败时，任务会明确提示「另一部分已提交成功，请勿重复提交」
 
 ### 多应用并行发布
 
@@ -406,11 +456,19 @@ Content-Type: application/json
   "version_name": "1.0.1",
   "version_code": 101,
   "release_notes": "修复问题",
+  "release_notes_l10n": {
+    "zh-CN": "1. 修复已知问题，优化产品使用体验；",
+    "zh-TW": "1. 修復已知問題並優化產品體驗；",
+    "en-US": "1. Fix known issues and optimize product experience;"
+  },
+  "harmony_version": {"version_name": "2.2.1", "version_code": 1000395, "version_id": "..."},
   "online_time": "2026-09-01T10:00"
 }
 ```
 
 - `platform`：逗号分隔多个；`"all"` = 全部已配平台（不含 Apple）
+- `release_notes_l10n`：多语言更新说明，键用 `zh-CN` / `zh-TW` / `en-US`，提交时自动映射（Google `zh-TW`，Apple `zh-Hant`）
+- `harmony_version`：华为 Harmony 要提审的 AGC 已上传版本（取自 `/api/harmony/versions`）；不传则华为只发 Android 包
 - `online_time`：ISO 格式时间（`YYYY-MM-DDTHH:MM`），留空=立即
 - 需要 `publisher` / `owner` 角色，且账号必须持有该 `app_id` 的授权；越权调用会记审计并触发飞书安全告警
 - 同一应用已有运行中任务时返回 400，错误信息里带上现有任务 id / 操作者 / 开始时间；不同应用可同时发布
@@ -446,6 +504,27 @@ GET /api/apps
 ```http
 GET /api/platforms
 ```
+
+### 获取华为 Harmony 可提审版本
+
+```http
+GET /api/harmony/versions?app_id=kaadas-smart
+```
+
+从 AGC「软件包管理」拉取该应用已上传的构建（按 versionCode 倒序）：
+
+```json
+{
+  "ok": true,
+  "package_name": "com.kaadas.lock",
+  "versions": [
+    {"version_name": "2.2.1", "version_code": 1000395, "build_version": "...",
+     "version_id": "...", "state": 4, "release_type": 1, "update_time": "..."}
+  ]
+}
+```
+
+要求：应用在 catalog 里配置了 `huawei_harmony_package`，且 `credentials.json` 中该 Harmony 包名的条目带 `app_kind: "harmony"`。
 
 ### 校验凭证
 

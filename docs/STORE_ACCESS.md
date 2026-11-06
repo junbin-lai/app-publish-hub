@@ -75,7 +75,8 @@
 | Token | POST https://connect-api.cloud.huawei.com/api/oauth2/v1/token（JSON body） |
 | OpenAPI | https://connect-api.cloud.huawei.com/api/publish/v2（**Android**）/ v3（HarmonyOS 5+） |
 | 接口 | `appid-list` / `app-info` / `upload-url`(authCode) / multipart 直传 / `app-file-info`(fileType=5 绑定) / `app-info`(newFeatures) / `app-submit` |
-| 凭证 | `client_id`（19 位 **API 客户端 project_client_id**）/ `client_secret` / `app_id` |
+| Harmony | ✅ v3 `version/brief-info/list` 拉取 AGC 已上传构建 / `app-info` 核对当前版本 / `app-submit` 提审（全网 `releaseType=1`、`releasePhase=0`；带 `releaseTime` 即定时上架） |
+| 凭证 | `client_id`（19 位 **API 客户端 project_client_id**）/ `client_secret` / `app_id`；Harmony 包名条目需加 `app_kind: "harmony"` |
 | 定时 | ✅ `releaseTime`（UTC："yyyy-MM-ddTHH:mm:ssZZ"） |
 
 **关键坑（必读）**：

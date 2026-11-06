@@ -368,7 +368,7 @@ return '<div style="margin-top:var(--space-3);border-top:1px solid var(--hairlin
 '<div><label for="phv">构建版本（AGC 软件包管理）</label>'+
 '<div class="input-row"><select id="phv" style="flex:1"><option value="">加载中…</option></select>'+
 '<button type=button class="sm secondary" onclick="loadHarmony(true)">拉取版本</button></div>'+
-'<div id="phvHint" class="muted" style="font-size:var(--font-caption);margin-top:var(--space-1)">正式包需先在 AGC「软件包管理」上传，这里选择要提交审核的版本</div></div>'+
+'<div id="phvHint" class="muted" style="font-size:var(--font-caption);margin-top:var(--space-1)">选版本 → 提交 Harmony 审核（同时有 APK 则 Android 包也发）；留空 → 华为只发 Android 包</div></div>'+
 '</div>'}
 function loadHarmony(force){var a=ST.cur;if(!a||!a.huawei_harmony_package)return;
 var sel=$("phv"),hint=$("phvHint");if(!sel)return;
@@ -382,7 +382,7 @@ if(!rows.length){sel.innerHTML='<option value="">没有已上传的版本</optio
 renderHarmonySel();
 if(hint)hint.textContent="共 "+rows.length+" 个已上传版本（版本名 / versionCode / 构建版本），选择后点「发布」提交审核"})}
 function renderHarmonySel(){var sel=$("phv"),rows=ST.HV||[];if(!sel)return;
-var h='<option value="">请选择要提交的版本</option>';
+var h='<option value="">不提交 Harmony（只发 Android 华为包）</option>';
 rows.forEach(function(v,i){var s=(v.version_name||"?")+" / "+(v.version_code==null?"?":v.version_code)+(v.build_version?" / 构建 "+v.build_version:"");
 h+='<option value="'+i+'">'+esc(s)+'</option>'});
 sel.innerHTML=h}
@@ -448,12 +448,19 @@ var zhNotes=(ST.l10nNotes&&ST.l10nNotes.zh||"").trim(),twNotes=(ST.l10nNotes&&ST
 var l10n={};if(zhNotes)l10n["zh-CN"]=zhNotes;if(twNotes)l10n["zh-TW"]=twNotes;if(enNotes)l10n["en-US"]=enNotes;
 var plats=selPlats(),plist=plats==="all"?[]:plats.split(",").map(function(s){return s.trim()});
 var needAab=plats==="all"||plist.indexOf("google")>=0;
-var needApk=plats==="all"||plist.some(function(p){return ["huawei","oppo","vivo","xiaomi","honor","qq"].indexOf(p)>=0});
-// 华为 Harmony：包已在 AGC 软件包管理，发布前必须选一个构建版本（送审的是 AGC 当前版本）
+// 华为：有 APK 就同时发 Android 包；只选华为时可只提交 Harmony（不传本机 APK）
 var hv=null,hvSel=$("phv");
 if(hvSel&&hvSel.value!=="")hv=(ST.HV||[])[parseInt(hvSel.value,10)]||null;
-if(a.huawei_harmony_package&&(plats==="all"||plist.indexOf("huawei")>=0)&&!hv){toast("请先选择要提交的 Harmony 构建版本","err");return}
-var body={app_id:a.id,platform:plats,dry_run:$("ipdry").checked,auto_review:$("ipauto").checked,release_mode:$("iprm").value,version_name:$("ipvn").value.trim(),version_code:parseInt($("ipvc").value)||null,release_notes:zhNotes,release_notes_l10n:l10n,track:$("ipv").value,aab_path:(needAab?(ab_in||a.aab_build||""):""),apk_path:(needApk?(ap_in||a.apk_build||""):""),harmony_version:hv,online_time:document.getElementById("pot")?document.getElementById("pot").value.trim():""};
+var huaweiSel=plats==="all"||plist.indexOf("huawei")>=0;
+if(hv&&!a.huawei_harmony_package){toast("该应用未配置 Harmony 包，无法提交 Harmony","err");return}
+if(hv&&plats!=="all"&&plist.indexOf("huawei")<0){toast("已选择 Harmony 构建版本，请勾选华为平台","err");return}
+var apkMandatory=plats==="all"||plist.some(function(p){return ["oppo","vivo","xiaomi","honor","qq"].indexOf(p)>=0});
+var apkPath="";
+if(apkMandatory)apkPath=ap_in||a.apk_build||"";
+else if(huaweiSel)apkPath=hv?(ap_in||""):(ap_in||a.apk_build||"");
+if(huaweiSel&&!apkPath&&!hv){toast("请上传 APK 或选择 Harmony 构建版本","err");return}
+if(hv)lg(apkPath?"华为将同时发布 Android 包并提交 Harmony "+(hv.version_name||""):"华为仅提交 Harmony "+(hv.version_name||"")+"（未提供 APK）","ok");
+var body={app_id:a.id,platform:plats,dry_run:$("ipdry").checked,auto_review:$("ipauto").checked,release_mode:$("iprm").value,version_name:$("ipvn").value.trim(),version_code:parseInt($("ipvc").value)||null,release_notes:zhNotes,release_notes_l10n:l10n,track:$("ipv").value,aab_path:(needAab?(ab_in||a.aab_build||""):""),apk_path:apkPath,harmony_version:hv,online_time:document.getElementById("pot")?document.getElementById("pot").value.trim():""};
 // 不再全局 busy(true) 锁页面：多应用可并行发布，切到其他应用立即可操作；
 // 同应用重复发布由服务端拦截并返回明确错误
 lg("== "+(body.dry_run?"Dry-run":"正式")+"发布 "+(a.name||a.id)+" ==");api("/api/publish",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(r){if(r.task_id){lg("任务: "+r.task_id);dlog("publish: 启动成功 tid="+r.task_id+" app="+a.id+" → 记入 RUNNING 并开始轮询");ST.RUNNING[a.id]={id:r.task_id,app_id:a.id,version_name:body.version_name||""};renderSb();startPoll(r.task_id,a.id)}else{dlog("publish: 启动失败 app="+a.id+" 响应="+JSON.stringify(r).slice(0,200));lg("启动失败: "+JSON.stringify(r),"err")}})}

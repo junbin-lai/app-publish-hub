@@ -97,7 +97,10 @@ App Store 链接里的数字 ID：`https://apps.apple.com/cn/app/id1234567890` �
 - 必须使用 **API 客户端类型（project_client_id）** 凭证：在 AGC 控制台 → 用户与访问 → API 凭证 → 新建，生成 19 位 client_id + 64 位 secret
 - **不要**使用「常规」页的 OAuth2.0 client_id（= App ID），那种凭证调发布 API 会 403
 - 每个 client 归属于一个项目，只能管理该项目下应用；不同 app 可能需各自建 API 客户端
-- 如果要同时管 Harmony 应用（包名不同、app_id 不同），需对应配置各自 app_id
+- 如果要同时管 Harmony 应用（包名与 Android 不同、app_id 不同），必须为 Harmony 包名**单独配一条**，
+  并加上 `"app_kind": "harmony"`：否则版本拉取与提审会按 Android APK 流程处理，直接报错
+- Harmony 条目里的 `client_id` / `client_secret` 也要写全（不会自动继承顶层配置）
+- 同时要在 `apps/catalog.json` 对应应用里配置 `huawei_harmony_package`，版本下拉与提审都用这个包名匹配凭证
 
 ### 多应用示例（华为）
 
@@ -106,7 +109,7 @@ App Store 链接里的数字 ID：`https://apps.apple.com/cn/app/id1234567890` �
   "apps": {
     "com.example.app": { "client_id": "...1", "client_secret": "...", "app_id": "100000001" },
     "com.kaidishi.lock":       { "client_id": "...2", "client_secret": "...", "app_id": "100038281" },
-    "com.example.harmony":         { "client_id": "...2", "client_secret": "...", "app_id": "100000002" }
+    "com.kaadas.lock":         { "client_id": "...3", "client_secret": "...", "app_id": "100000002", "app_kind": "harmony" }
   }
 }
 ```

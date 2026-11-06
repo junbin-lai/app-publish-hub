@@ -673,9 +673,17 @@ def _publish_worker(tid: str):
         _app = catalog.get_app(app_id)
         _b = catalog._build_paths(_app)
         need_aab = "google" in targets
-        need_apk = any(t != "google" for t in targets)
+        # APK 何时必需：除华为外的国内平台必选；华为有 APK 就发 Android 包，
+        # 只发华为且选了 Harmony 版本时可只用 AGC 上的包（不传本机 APK）
+        harmony_pkg = str(_app.get("huawei_harmony_package") or "").strip()
+        harmony_sel = bool(harmony_pkg and params.get("harmony_version"))
+        apk_mandatory = any(t not in ("google", "huawei") for t in targets)
         aab_p = params.get("aab", "") or (_b["aab"] if need_aab else "")
-        apk_p = params.get("apk", "") or (_b["apk"] if need_apk else "")
+        apk_p = params.get("apk", "")
+        if not apk_p and apk_mandatory:
+            apk_p = _b["apk"]
+        if not apk_p and "huawei" in targets and not harmony_sel:
+            apk_p = _b["apk"]  # 仅华为且未选 Harmony：沿用目录配置的 APK
         release = catalog.to_release(
             app_id=app_id,
             version_name=params.get("version_name", ""),
@@ -691,12 +699,10 @@ def _publish_worker(tid: str):
         release.metadata["auto_review"] = bool(params.get("auto_review"))
         release.metadata["release_mode"] = params.get("release_mode") or "staged"
         release.metadata["release_notes_l10n"] = params.get("release_notes_l10n") or {}
-        # 华为 Harmony：应用信息里的 Harmony 包名（与 Android 包名可能不同）
-        harmony_pkg = str(_app.get("huawei_harmony_package") or "").strip()
-        if harmony_pkg:
+        # 华为 Harmony：只有选了 AGC 构建版本才走 Harmony 提审；不选则华为只发 Android 包
+        # （Harmony 包名与 Android 包名不同，需一并带上供适配器匹配凭证）
+        if harmony_sel:
             release.metadata["harmony_package"] = harmony_pkg
-        # 华为 Harmony：选中的 AGC 已上传版本（app-submit 前会核对是否与当前版本一致）
-        if params.get("harmony_version"):
             release.metadata["harmony_version"] = params["harmony_version"]
         _step(tid, f"包名: {release.package_name} v{release.version_name or '?'}")
         if release.version_name:

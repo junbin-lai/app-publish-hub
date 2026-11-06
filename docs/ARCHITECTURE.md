@@ -23,7 +23,7 @@ Registry (registry.py) -- 按平台名惰性加载适配器
 
 - `Platform`：枚举 google/apple/xiaomi/oppo/vivo/honor/huawei
 - `AuditState`：DRAFT / SUBMITTED / REVIEWING / REJECTED / PUBLISHED / UNKNOWN
-- `Release`：包名、版本名、版本号、APK/AAB 路径、更新说明、metadata（online_time 等）
+- `Release`：包名、版本名、版本号、APK/AAB 路径、更新说明、metadata（online_time / release_notes_l10n / harmony_package / harmony_version 等）
 - `SubmitResult`：平台、成功与否、消息、remote_reference（任务 ID）
 - `StoreStatus`：live_version_names/codes、draft_version_names、reviewing_version_names、review_message
 

@@ -479,14 +479,47 @@ class HuaweiAdapter(StoreAdapter):
 
     # ---------- 发布 ----------
     def publish(self, release: Release, dry_run: bool = False) -> SubmitResult:
-        scb = (release.metadata or {}).get("_step_cb")
-        # Harmony 应用的信息在 catalog 的 huawei_harmony_package，包名与 Android 不同
-        harmony_pkg = str((release.metadata or {}).get("harmony_package") or "").strip()
-        cred = self._cred_for(harmony_pkg or release.package_name)
-        if cred.get("app_kind", "android") == "harmony":
+        """华为发布：Android APK 上传提审 / Harmony 提交 AGC 已有版本，两者可同时进行。"""
+        md = release.metadata or {}
+        # 只有显式选了 AGC 构建版本才走 Harmony 提审
+        # （Harmony 应用信息在 catalog 的 huawei_harmony_package，包名与 Android 不同）
+        harmony_pkg = str(md.get("harmony_package") or "").strip() if md.get("harmony_version") else ""
+        do_harmony = bool(harmony_pkg)
+        do_android = bool(release.apk_path)
+        if do_android:
+            try:
+                do_android = self._cred_for(release.package_name).get("app_kind", "android") != "harmony"
+            except StoreError:
+                # 凭证缺失时仍走 Android 分支，由 _publish_android 抛出具体错误
+                do_android = True
+
+        if do_android and do_harmony:
+            parts: List[str] = []
+            errs: List[str] = []
+            for label, call in (
+                ("Android 包", lambda: self._publish_android(release, dry_run=dry_run)),
+                ("Harmony", lambda: self._publish_harmony(
+                    release, self._cred_for(harmony_pkg), harmony_pkg, dry_run=dry_run)),
+            ):
+                try:
+                    parts.append(call().message)
+                except StoreError as e:
+                    errs.append(f"{label}: {e}")
+            if errs:
+                raise StoreError("；".join(errs) +
+                                 ("（另一部分已提交成功，请勿重复提交）" if parts else ""))
+            return SubmitResult(self.platform, True, "；".join(parts), state=AuditState.SUBMITTED)
+        if do_harmony:
             # Harmony 包已在 AGC 软件包管理里，发布流程=选择版本 + 提交发布（送审）
-            return self._publish_harmony(release, cred, harmony_pkg or release.package_name,
+            return self._publish_harmony(release, self._cred_for(harmony_pkg), harmony_pkg,
                                          dry_run=dry_run)
+        if do_android:
+            return self._publish_android(release, dry_run=dry_run)
+        raise StoreError("华为发布需要 APK 包或 Harmony 构建版本（至少提供一项）")
+
+    def _publish_android(self, release: Release, dry_run: bool = False) -> SubmitResult:
+        scb = (release.metadata or {}).get("_step_cb")
+        cred = self._cred_for(release.package_name)
         if dry_run:
             # dry-run 本地校验：凭证字段齐全 + 安装包存在（与其他国内平台一致）
             if not cred.get("client_id") or not cred.get("client_secret"):

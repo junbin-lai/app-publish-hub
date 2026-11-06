@@ -15,6 +15,9 @@
 - **8 大平台全覆盖**：发布 + 查询（Apple 已实现 App Store Connect 提交审核，**实验性、未经真机实测**，默认仅用于查询已上架版本）
 - **统一发布模型**：一个应用配置 + 新 APK/AAB + 更新说明 → 选平台 → 一键发布
 - **平台多选发布**：App发布中枢可按勾选平台发布（排除 Apple），支持「全部平台」
+- **华为 Harmony 构建版本发布**：从 AGC「软件包管理」拉取已上传的 Harmony 版本，选择后直接提交审核；选了版本时华为会**同时**发 Android 包（有 APK）并提交 Harmony，只发 Harmony 时不需要本机安装包
+- **AAB / APK 版本一致性提示**：两个包都上传时自动比对 versionName / versionCode，不一致在版本下方提示（仅提示，不阻止分别发布）
+- **更新说明三语言默认文案**：`config/board.json` 的 `release_notes.defaults` 可配置简体 / 繁体 / 英文预填文案，提交时自动映射为 Google 的 `zh-TW` 与 Apple 的 `zh-Hant`
 - **定时上线**：小米/OPPO/vivo/荣耀/华为/腾讯应用宝 均支持定时发布（应用宝限提审 6 小时后、30 天内）
 - **审核通过后立即上线**：华为定时上架版本可一键改为立即上架（on-shelf-time 接口），App发布中枢「待发布」状态卡提供「立即上线」按钮（其余平台官方未提供该 API）
 - **自动复用资料**：OPPO 更新版本时自动沿用现网图标/简介/截图，无需重传
@@ -38,7 +41,7 @@
 | OPPO 软件商店 | ✅ | ✅ | ✅ | ❌ | 更新自动复用现有发布资料 |
 | vivo 应用商店 | ✅ | ✅ | ✅ | ❌ | 上传 APK → 同步更新 |
 | 荣耀应用市场 | ✅ | ✅ | ✅ | ❌ | 审核结果含审核意见 |
-| 华为 AppGallery | ✅ | ✅ | ✅ | ✅ | upload-url + multipart 直传 + app-file-info 绑定；定时版本可用 on-shelf-time 立即上架 |
+| 华为 AppGallery | ✅ | ✅ | ✅ | ✅ | Android：upload-url + multipart 直传 + app-file-info 绑定；Harmony：拉取 AGC 已上传构建 → 选择版本 → app-submit 提审（与 Android 包可在同一任务内一起发）；定时版本可用 on-shelf-time 立即上架 |
 | 腾讯应用宝 | ✅ | ✅ | ✅ | ❌ | HmacSHA256 签名；更新走 API（仅已上线应用，每天限 50 次更新）；定时发布限提审 6 小时后、30 天内 |
 
 ## 项目结构
