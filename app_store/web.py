@@ -691,6 +691,13 @@ def _publish_worker(tid: str):
         release.metadata["auto_review"] = bool(params.get("auto_review"))
         release.metadata["release_mode"] = params.get("release_mode") or "staged"
         release.metadata["release_notes_l10n"] = params.get("release_notes_l10n") or {}
+        # 华为 Harmony：应用信息里的 Harmony 包名（与 Android 包名可能不同）
+        harmony_pkg = str(_app.get("huawei_harmony_package") or "").strip()
+        if harmony_pkg:
+            release.metadata["harmony_package"] = harmony_pkg
+        # 华为 Harmony：选中的 AGC 已上传版本（app-submit 前会核对是否与当前版本一致）
+        if params.get("harmony_version"):
+            release.metadata["harmony_version"] = params["harmony_version"]
         _step(tid, f"包名: {release.package_name} v{release.version_name or '?'}")
         if release.version_name:
             _update(tid, version_name=release.version_name)  # 实际发布的版本号（含 catalog 回落）
@@ -1453,6 +1460,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_app_icon()
             if path == "/api/google/bundles":
                 return self._api_google_bundles()
+            if path == "/api/harmony/versions":
+                return self._api_harmony_versions()
             if path == "/api/google/apk/check":
                 return self._api_google_apk_check()
             if path == "/api/google/apk":
@@ -1774,6 +1783,8 @@ class Handler(BaseHTTPRequestHandler):
             "role": (user or {}).get("role") or "owner",
             "apps": _user_apps(user),
             "feishu": fs_state,
+            # 更新说明默认文案（board.json release_notes.defaults，未配置则空 → 前端不预填）
+            "release_notes_default": board_config.release_notes_default(self.board_config_path),
         })
 
     def _api_share_image(self):
@@ -1961,6 +1972,34 @@ class Handler(BaseHTTPRequestHandler):
                 return _bytes_response(self, data, ct)
         return _bytes_response(self, data, "image/png")
 
+    def _api_harmony_versions(self):
+        """华为 Harmony：AGC 软件包管理里已上传的构建版本列表（供发布前选择）。
+
+        返回 [{version_name, version_code, build_version, version_id, package_id,
+               state, release_type, update_time}]，按 versionCode 倒序。
+        """
+        qs = parse_qs(urlparse(self.path).query)
+        app_id = (qs.get("app_id") or [""])[0].strip()
+        if not app_id:
+            raise StoreError("缺少 app_id")
+        if self._app_denied(app_id):
+            return
+        app = self._catalog().get_app(app_id)
+        # Harmony 版本走 Harmony 包（huawei_harmony_package），与 Android 包名不同
+        package = str(app.get("huawei_harmony_package") or app.get("package_name") or "").strip()
+        if not package:
+            raise StoreError("该应用未配置包名（package_name）")
+        creds = load_credentials(self.credentials_path)
+        hw_apps = ((creds.get("huawei") or {}).get("apps") or {})
+        cred = hw_apps.get(package)
+        if not cred:
+            raise StoreError(f"未配置华为凭证（credentials.json huawei.apps['{package}']）")
+        if str((cred or {}).get("app_kind") or "") != "harmony":
+            raise StoreError(f"{package} 不是 HarmonyOS 应用（华为凭证缺少 app_kind=harmony）")
+        adapter = get_adapter("huawei", creds)
+        rows = adapter.list_harmony_versions(package)
+        return _json_response(self, {"ok": True, "package_name": package, "versions": rows})
+
     def _api_google_bundles(self):
         """Google Play 已上传的 App Bundle 版本列表（供下载面板选择版本）。
 
@@ -2118,6 +2157,8 @@ class Handler(BaseHTTPRequestHandler):
             # 浏览器下载条立即出现（有总大小即显示百分比进度），之后边从 Google 拉边转发；
             # 同时写独立命名的 .part 临时文件（并发拉取互不干扰），全部完成后原子改名入缓存，
             # 下载中断不会留下半成品被后续请求命中
+            # downloads 目录不进部署包（首次下载时可能还不存在），写临时文件前先建目录
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
             part = dest + ".part-" + uuid.uuid4().hex[:8]
             stream = None
             try:
@@ -2302,6 +2343,8 @@ class Handler(BaseHTTPRequestHandler):
         apk_path = body.get("apk_path") or ""
         aab_path = body.get("aab_path") or ""
         online_time = body.get("online_time") or None
+        # 华为 Harmony：版本包已在 AGC 软件包管理里，这里只携带选中的构建版本
+        harmony_version = body.get("harmony_version") or None
         auto_review = bool(body.get("auto_review"))
         release_mode = body.get("release_mode") or "staged"
 
@@ -2339,6 +2382,7 @@ class Handler(BaseHTTPRequestHandler):
                 "version_name": version_name, "version_code": version_code,
                 "release_notes": release_notes, "release_notes_l10n": release_notes_l10n, "track": track,
                 "online_time": online_time,
+                "harmony_version": harmony_version,
                 "auto_review": auto_review,
                 "release_mode": release_mode,
             })

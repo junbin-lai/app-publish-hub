@@ -362,7 +362,7 @@ class AppleAdapter(StoreAdapter):
 
         # 3) 填写本地化信息（至少一条）
         if step_cb: step_cb("填写版本本地化（更新说明）…")
-        self._set_version_localization(version_id, release_notes)
+        self._set_version_localizations(version_id, release)
 
         # 4) 提交审核
         if step_cb: step_cb("创建审核提交…")
@@ -405,16 +405,54 @@ class AppleAdapter(StoreAdapter):
             return builds[0]["id"]
         return None
 
-    def _set_version_localization(self, version_id: str, whats_new: str) -> None:
-        """设置版本本地化信息（描述、更新说明等）。至少需要一条本地化记录。"""
-        if whats_new:
+    def _set_version_localizations(self, version_id: str, release: Release) -> None:
+        """按语言写入更新说明。
+
+        Apple 的语言码与 Google 不同：简体 zh-Hans、繁体 zh-Hant、英文 en-US；
+        前端统一按 zh-CN / zh-TW / en-US 传，这里做映射。
+        已存在的本地化走 PATCH，不存在才 POST（ASC 对同一 locale 重复创建会报 409）。
+        """
+        l10n = (release.metadata or {}).get("release_notes_l10n") or {}
+        base = release.release_notes or ""
+        notes: Dict[str, str] = {}
+        zh = (l10n.get("zh-CN") or "").strip() or base
+        if zh:
+            notes["zh-Hans"] = zh
+        tw = (l10n.get("zh-TW") or "").strip()
+        if tw:
+            notes["zh-Hant"] = tw
+        en = (l10n.get("en-US") or "").strip()
+        if en:
+            notes["en-US"] = en
+        if not notes:
+            return
+
+        existing: Dict[str, str] = {}
+        try:
+            res = self._asc_request(
+                "GET", f"/appStoreVersions/{version_id}/appStoreVersionLocalizations?limit=200")
+            for it in res.get("data") or []:
+                loc = (it.get("attributes") or {}).get("locale") or ""
+                if loc:
+                    existing[loc] = it.get("id") or ""
+        except StoreError:
+            existing = {}
+
+        for locale, text in notes.items():
+            loc_id = existing.get(locale)
+            if loc_id:
+                self._asc_request("PATCH", f"/appStoreVersionLocalizations/{loc_id}", body={
+                    "data": {
+                        "type": "appStoreVersionLocalizations",
+                        "id": loc_id,
+                        "attributes": {"whatsNew": text},
+                    }
+                })
+                continue
             body = {
                 "data": {
                     "type": "appStoreVersionLocalizations",
-                    "attributes": {
-                        "locale": "zh-Hans",
-                        "whatsNew": whats_new,
-                    },
+                    "attributes": {"locale": locale, "whatsNew": text},
                     "relationships": {
                         "appStoreVersion": {"data": {"type": "appStoreVersions", "id": version_id}},
                     },

@@ -18,6 +18,14 @@
   "session_days": 14,
   "_upload_concurrency说明": "全局上传并发上限（1~6，默认 2）。多应用/多平台同时上传大安装包会打满上行带宽导致网络失败；改完需重启 App发布中枢",
   "upload_concurrency": 2,
+  "_release_notes说明": "更新说明默认文案（可选，不需要就删掉整块）。App发布中枢打开时会按 zh-CN / zh-TW / en-US 预填到更新说明输入框；提交时自动映射为 Google 的 zh-TW 与 Apple 的 zh-Hant。",
+  "release_notes": {
+    "defaults": {
+      "zh-CN": "1. 修复已知问题，优化产品使用体验；",
+      "zh-TW": "1. 修復已知問題並優化產品體驗；",
+      "en-US": "1. Fix known issues and optimize product experience;"
+    }
+  },
   "_feishu说明": "飞书自建应用机器人（创建步骤见 docs/WEB_GUIDE.md）。app_id/app_secret 在开放平台「凭证与基础信息」页；notify_chat_id 可以不填，改为在群里 @机器人 发送「绑定通知群」自动写入。",
   "feishu": {
     "app_id": "cli_xxxxxxxxxxxxxxxx",

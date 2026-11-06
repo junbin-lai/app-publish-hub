@@ -153,6 +153,21 @@ def feishu_ready(path: str) -> bool:
     return bool(fs.get("app_id") and fs.get("app_secret"))
 
 
+def release_notes_default(path: str) -> Dict[str, str]:
+    """更新说明默认文案（board.json 的 release_notes.defaults）。
+
+    键用各商店通用的写法：zh-CN / zh-TW / en-US，提交时再按平台映射
+    （Google 用 zh-TW，Apple 用 zh-Hant）。未配置返回空 dict，前端不预填。
+    """
+    cfg = load_board_config(path)
+    rn = cfg.get("release_notes")
+    defaults = rn.get("defaults") if isinstance(rn, dict) else None
+    if not isinstance(defaults, dict):
+        return {}
+    return {str(k): str(v) for k, v in defaults.items()
+            if isinstance(v, str) and v.strip()}
+
+
 def security_alert_chat_id(path: str) -> str:
     """安全告警的接收会话（飞书私聊 chat_id）。与发布通知群（notify_chat_id）分开：
     账号增删改/越权等敏感告警只发私聊，不进公共发布群。空串 = 未绑定。"""

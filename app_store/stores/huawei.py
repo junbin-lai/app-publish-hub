@@ -111,15 +111,23 @@ class HuaweiAdapter(StoreAdapter):
             raise StoreError("华为 " + path + ": " + str(d))
         return d
 
-    def _post(self, path: str, pkg: str, query: dict = None, body: dict = None) -> dict:
+    def _post(self, path: str, pkg: str, query: dict = None, body: dict = None,
+              extra_headers: dict = None) -> dict:
         import requests
         url = _DOMAIN + path
         if query:
             url += "?" + urllib.parse.urlencode(query)
-        r = requests.post(url, json=body, headers=self._headers(pkg), timeout=60)
+
+        def _hdrs(force: bool = False) -> dict:
+            h = self._headers(pkg, force_refresh=force)
+            if extra_headers:
+                h.update(extra_headers)
+            return h
+
+        r = requests.post(url, json=body, headers=_hdrs(), timeout=60)
         if r.status_code == 401:
             r = requests.post(url, json=body,
-                              headers=self._headers(pkg, force_refresh=True), timeout=60)
+                              headers=_hdrs(True), timeout=60)
         d = self._parse_json(r, path)
         if d.get("ret", {}).get("code") != 0:
             raise StoreError("华为 " + path + ": " + str(d))
@@ -373,13 +381,112 @@ class HuaweiAdapter(StoreAdapter):
             raw=dd, checked_at=utcnow_iso(),
         )
 
+    def list_harmony_versions(self, pkg: str) -> List[Dict[str, Any]]:
+        """拉取 AGC「软件包管理」里该 HarmonyOS 应用已上传的版本（v3 version/brief-info/list）。
+
+        返回 [{version_name, version_code, build_version, version_id, package_id,
+              state, release_type, update_time}]，按 versionCode 倒序。
+        Harmony 的正式包由开发同学先传到 AGC，看板这里只做「选哪个版本提交审核」。
+        """
+        cred = self._cred_for(pkg)
+        app_id = str(cred.get("app_id") or "")
+        if not app_id:
+            raise StoreError(f"华为凭证 apps[{pkg}] 缺少 app_id（HarmonyOS 发布必填）")
+        d = self._post("/api/publish/v3/version/brief-info/list", pkg,
+                       body={"packageName": pkg}, extra_headers={"appId": app_id})
+        rows: List[Dict[str, Any]] = []
+        for v in d.get("versionList") or []:
+            for p in v.get("packageList") or []:
+                rows.append({
+                    "version_name": str(p.get("versionName") or ""),
+                    "version_code": p.get("versionCode"),
+                    "build_version": str(p.get("buildVersion") or ""),
+                    "version_id": str(v.get("versionId") or ""),
+                    "package_id": str(p.get("packageId") or ""),
+                    "state": v.get("state"),
+                    "release_type": v.get("releaseType"),
+                    "update_time": v.get("updateTime"),
+                })
+        # 版本号大的排前面；versionCode 缺失时退化为按 version_id 排
+        rows.sort(key=lambda r: (int(r.get("version_code") or 0), r.get("version_id") or ""),
+                  reverse=True)
+        return rows
+
+    def _publish_harmony(self, release: Release, cred: dict, pkg: str,
+                         dry_run: bool = False) -> SubmitResult:
+        """HarmonyOS 发布：包已在 AGC 软件包管理里，这里只做「提交发布（送审）」。
+
+        注意：AGC 的 app-submit 提交的是该应用当前配置的版本，接口没有「指定 packageId」
+        参数；因此这里会先用 app-info 核对当前版本与所选版本是否一致，不一致直接报错，
+        避免把别的版本送审。
+        """
+        app_id = str(cred.get("app_id") or "")
+        if not app_id:
+            raise StoreError(f"华为凭证 apps[{pkg}] 缺少 app_id（HarmonyOS 发布必填）")
+        sel = (release.metadata or {}).get("harmony_version") or {}
+        sel_name = str(sel.get("version_name") or "")
+        sel_code = sel.get("version_code")
+        scb = (release.metadata or {}).get("_step_cb")
+        if not sel_name and sel_code in (None, ""):
+            raise StoreError("华为 Harmony 发布前请先在下拉里选择要提交的构建版本")
+
+        if dry_run:
+            return SubmitResult(self.platform, True,
+                                f"华为 Harmony: dry-run 通过（待提交 {sel_name or sel_code}）",
+                                state=AuditState.DRAFT)
+
+        if scb: scb("核对 AGC 当前版本…")
+        info = self._get("/api/publish/v3/app-info", {"appId": app_id}, pkg)
+        ai = info.get("appInfo") or {}
+        cur_name = str(ai.get("versionNumber") or "")
+        cur_code = ai.get("versionCode")
+        if (sel_name and cur_name and sel_name != cur_name) or \
+           (sel_code not in (None, "") and cur_code not in (None, "") and int(sel_code) != int(cur_code)):
+            raise StoreError(
+                f"所选版本与 AGC 当前待发布版本不一致（所选 {sel_name or '?'}/{sel_code if sel_code is not None else '?'}，"
+                f"AGC 当前 {cur_name or '?'}/{cur_code if cur_code is not None else '?'}）。"
+                "app-submit 只能提交 AGC 当前版本，请先在软件包管理里把该版本设为当前版本，或选择与之匹配的版本")
+
+        body: Dict[str, Any] = {"releaseType": 1, "releasePhase": 0}
+        online_time = (release.metadata or {}).get("online_time")
+        if online_time:
+            # 定时发布：前端传的是本地时间（yyyy-MM-ddTHH:mm），转成华为要求的 UTC 格式
+            body["releaseTime"] = self._to_utc(online_time)
+        if scb: scb(f"提交发布 {sel_name or cur_name}…")
+        self._post("/api/publish/v3/app-submit", pkg, query={"appId": app_id},
+                   body=body, extra_headers={"appId": app_id})
+        if scb: scb("已提交审核")
+        return SubmitResult(
+            self.platform, True,
+            f"华为 Harmony: 已提交 {sel_name or cur_name}（versionCode {sel_code if sel_code is not None else cur_code}）审核",
+            remote_reference=str(sel.get("version_id") or ""),
+            state=AuditState.SUBMITTED,
+            raw={"app_id": app_id, "submitted": body},
+        )
+
+    @staticmethod
+    def _to_utc(text: str) -> str:
+        """本地时间字符串 -> 华为要求的 yyyy-MM-ddTHH:mm:ss+0800（解析失败原样返回）。"""
+        from datetime import datetime, timedelta, timezone
+        t = str(text or "").strip().replace("T", " ")
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                dt = datetime.strptime(t, fmt).replace(tzinfo=timezone(timedelta(hours=8)))
+                return dt.strftime("%Y-%m-%dT%H:%M:%S+0800")
+            except ValueError:
+                continue
+        return str(text or "")
+
     # ---------- 发布 ----------
     def publish(self, release: Release, dry_run: bool = False) -> SubmitResult:
         scb = (release.metadata or {}).get("_step_cb")
-        # HarmonyOS 应用当前仅支持查询版本（发布需在 AGC 控制台手动操作）
-        cred = self._cred_for(release.package_name)
+        # Harmony 应用的信息在 catalog 的 huawei_harmony_package，包名与 Android 不同
+        harmony_pkg = str((release.metadata or {}).get("harmony_package") or "").strip()
+        cred = self._cred_for(harmony_pkg or release.package_name)
         if cred.get("app_kind", "android") == "harmony":
-            raise StoreError("华为 Harmony 仅支持查询版本；发布请在 AGC 控制台操作")
+            # Harmony 包已在 AGC 软件包管理里，发布流程=选择版本 + 提交发布（送审）
+            return self._publish_harmony(release, cred, harmony_pkg or release.package_name,
+                                         dry_run=dry_run)
         if dry_run:
             # dry-run 本地校验：凭证字段齐全 + 安装包存在（与其他国内平台一致）
             if not cred.get("client_id") or not cred.get("client_secret"):

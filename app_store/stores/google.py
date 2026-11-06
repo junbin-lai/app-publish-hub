@@ -236,13 +236,17 @@ class GoogleAdapter(StoreAdapter):
         package = release.package_name
         edit_id = self._insert_edit(service, package)
         release_notes = release.whatsnew or release.release_notes or ""
-        # 多语言更新说明：中文 / 英文（英文留空回退中文；商店端对其他语言默认回退英文）
+        # 多语言更新说明：简体 / 繁体 / 英文（留空回退简体；商店端对其他语言默认回退英文）
         l10n = (release.metadata or {}).get("release_notes_l10n") or {}
         zh_notes = (l10n.get("zh-CN") or "").strip() or release_notes
+        tw_notes = (l10n.get("zh-TW") or "").strip()
         en_notes = (l10n.get("en-US") or "").strip() or zh_notes
         release_notes_list = []
         if zh_notes:
             release_notes_list.append({"language": "zh-CN", "text": zh_notes})
+        if tw_notes:
+            # Google Play 的繁体中文语言码是 zh-TW（不是 Apple 的 zh-Hant）
+            release_notes_list.append({"language": "zh-TW", "text": tw_notes})
         if en_notes:
             release_notes_list.append({"language": "en-US", "text": en_notes})
 
@@ -378,9 +382,7 @@ class GoogleAdapter(StoreAdapter):
                     "name": f"{version_code} ({release.version_name})" if release.version_name else str(version_code),
                     "versionCodes": [str(version_code)],
                     "status": "draft",
-                    "releaseNotes": (
-                        [{"language": "zh-CN", "text": release_notes}] if release_notes else []
-                    ),
+                    "releaseNotes": release_notes_list,
                 }
             track_body = {"track": release.track, "releases": [release_body]}
             # 不再前台轮询等待 processing：bundles.list 返回的 Bundle 没有 status 字段，
