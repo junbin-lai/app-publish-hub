@@ -1080,6 +1080,7 @@ def query_app_status(app_id: str, platform: str = "all") -> Tuple[List[Dict[str,
                     "internal_version_names": list(getattr(s, "internal_version_names", [])),
                     "audit_note": s.audit_note,
                     "google_release_now": bool(getattr(s, "google_release_now", False)),
+                    "apple_release_now": bool(getattr(s, "apple_release_now", False)),
                     "review_message": s.review_message,
                     "checked_at": s.checked_at,
                 }
@@ -1962,11 +1963,12 @@ class Handler(BaseHTTPRequestHandler):
         return _json_response(self, {"ok": True, **info})
 
     def _api_release_now(self, body: Dict[str, Any]):
-        """审核通过待上架（定时未到时间）的版本改为立即上架。
+        """审核通过待上架的版本改为立即上架 / 立即发布。
 
-        目前仅华为提供官方接口（on-shelf-time changeType=2）；
-        其余平台适配器 release_now 默认抛 StoreError，前端只在
-        华为"待发布"状态卡上展示按钮。
+        华为：on-shelf-time changeType=2（原定时时间作废）；
+        Google：production 轨道分阶段发布改为 100% 全量；
+        Apple：PENDING_DEVELOPER_RELEASE 的版本创建 release request 立即上架。
+        其余平台适配器 release_now 默认抛 StoreError，前端不会展示按钮。
         """
         app_id = body.get("app_id") or ""
         if not app_id:

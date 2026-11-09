@@ -25,6 +25,7 @@
 | 发布 | ✅ 选 TestFlight 已上传构建 → 创建 `appStoreVersions` → PATCH build 关联 → 写本地化更新说明 → `reviewSubmissions` 提交审核 |
 | 前提 | Key 角色需 App Manager；构建需处理完成（`processingState=VALID`） |
 | 状态映射 | `READY_FOR_SALE`→已上架；`WAITING_FOR_REVIEW`/`IN_REVIEW`→审核中；`PENDING_APPLE_RELEASE`/`PENDING_DEVELOPER_RELEASE`/`PROCESSING_FOR_APP_STORE`→待发布；`PREPARE_FOR_SUBMISSION`→草稿；`REJECTED`/`DEVELOPER_REJECTED`→已拒绝 |
+| 立即发布 | ✅ 状态为 `PENDING_DEVELOPER_RELEASE` 时状态卡出现「立即发布」按钮，调用 `POST /v1/appStoreVersionReleaseRequests` 立即上架；`PENDING_APPLE_RELEASE` 由苹果自动发布，无按钮 |
 
 ## 小米应用商店
 

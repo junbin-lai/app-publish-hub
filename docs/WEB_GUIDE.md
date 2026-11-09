@@ -69,8 +69,8 @@ App发布中枢默认**无登录、仅本机 127.0.0.1 访问**（和以前一�
 
 | 角色 | 能做什么 |
 | --- | --- |
-| **owner** | 超级管理员：**全部应用** + 发布/上传/停止/清空历史 + 华为立即上线 + 用户管理（增删改账号与授权） |
-| **publisher** | 发布员：在被授权的应用内发布、上传安装包、停止任务、华为立即上线、查询；**不能**管理用户、不能清空历史 |
+| **owner** | 超级管理员：**全部应用** + 发布/上传/停止/清空历史 + 华为立即上线 / Google 全量发布 / Apple 立即发布 + 用户管理（增删改账号与授权） |
+| **publisher** | 发布员：在被授权的应用内发布、上传安装包、停止任务、华为立即上线 / Google 全量发布 / Apple 立即发布、查询；**不能**管理用户、不能清空历史 |
 | **viewer** | 只读：App发布中枢/版本/发布历史/分享图、查询状态、下载签名 APK；**发布类按钮全部禁用**（后端同样拦截） |
 
 **应用级授权（apps）**：
@@ -470,6 +470,12 @@ Apple 状态说明：应用配置了 API 密钥且 `apps` 里是数字 App ID �
 `appStoreVersions.appStoreState` 推导（`READY_FOR_SALE`→已上架、`WAITING_FOR_REVIEW`/`IN_REVIEW`→审核中、
 `PENDING_*`→待发布、`PREPARE_FOR_SUBMISSION`→草稿、`REJECTED`→已拒绝）；
 未配置密钥时回退网页解析，只有 `published` 与线上版本号。
+
+已上架版本只取最新一条（Apple 会为每个历史上架版本保留 `READY_FOR_SALE` 记录）。当状态为
+`PENDING_DEVELOPER_RELEASE`（审核通过、待开发者发布）时，状态卡会出现 **「立即发布」** 按钮，
+点击后调用 `POST /api/release-now`（`platform=apple`），后端创建
+`appStoreVersionReleaseRequests` 让该版本立即上架；`PENDING_APPLE_RELEASE` 由苹果自动发布，
+不显示按钮。
 
 ### 发布
 

@@ -113,6 +113,7 @@ class StoreStatus:
     internal_version_names: List[str] = field(default_factory=list)  # Google internal 轨道
     audit_note: str = ""  # 审核状态文字（标准化）：审核中 / 审核通过，待发布 / 审核通过，定时发布（时间）/ 审核未通过
     google_release_now: bool = False  # Google：production 轨道存在可「全量发布」的 inProgress 分阶段版本
+    apple_release_now: bool = False  # Apple：存在「审核通过、待开发者发布」的版本，可一键立即发布
     review_message: str = ""  # 平台附加信息（更新说明/releaseId 等，不在状态卡直接展示）
     checked_at: str = ""
     raw: Any = None

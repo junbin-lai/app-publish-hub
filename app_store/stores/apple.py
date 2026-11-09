@@ -242,6 +242,9 @@ class AppleAdapter(StoreAdapter):
         )
 
     # ASC appStoreState → 统一状态归类
+    # READY_FOR_DISTRIBUTION 是 Apple 新枚举值（替代已弃用的 READY_FOR_SALE），
+    # 部分应用开始返回该值，两种都要当作"已上架"。
+    _LIVE_STATES = ("READY_FOR_SALE", "READY_FOR_DISTRIBUTION")
     _REVIEW_STATES = ("WAITING_FOR_REVIEW", "IN_REVIEW")
     _PENDING_STATES = ("PENDING_APPLE_RELEASE", "PENDING_DEVELOPER_RELEASE",
                        "PROCESSING_FOR_APP_STORE")
@@ -271,11 +274,30 @@ class AppleAdapter(StoreAdapter):
             raise StoreError(f"Apple 应用 {package_name}（App ID {apple_app_id}）没有商店版本记录")
         versions.sort(key=lambda x: x[2], reverse=True)  # 新版本在前
 
-        live = [v for v, st, _ in versions if st == "READY_FOR_SALE"]
-        review = [(v, st) for v, st, _ in versions if st in self._REVIEW_STATES]
-        pending = [(v, st) for v, st, _ in versions if st in self._PENDING_STATES]
-        draft = [v for v, st, _ in versions if st in self._DRAFT_STATES]
-        rejected = [(v, st) for v, st, _ in versions if st in self._REJECTED_STATES]
+        # Apple 会为每个曾经上架的版本保留 READY_FOR_SALE 记录，
+        # 直接全量收集会把 6.21.0、6.20.0…… 全部当成"已上架版本"显示，
+        # 这里只取最新的一条（versions 已按 createdDate 降序）。
+        live_all = [(v, d) for v, st, d in versions if st in self._LIVE_STATES]
+        live = [live_all[0][0]] if live_all else []
+        live_date = live_all[0][1] if live_all else ""
+
+        def _after_live(created: str) -> bool:
+            """只保留晚于当前线上版本的记录，过滤掉历史遗留状态。
+
+            审核中/待发布/被拒都只应反映"本次新版本"的情况；
+            历史版本的 REJECTED 记录会一直留在 Apple 后台，
+            不过滤会导致应用早已重新上架后仍提示"某版本被拒绝"。
+            """
+            return not live_date or created > live_date
+
+        review = [(v, st) for v, st, d in versions
+                  if st in self._REVIEW_STATES and _after_live(d)]
+        pending = [(v, st) for v, st, d in versions
+                   if st in self._PENDING_STATES and _after_live(d)]
+        draft_all = [v for v, st, _ in versions if st in self._DRAFT_STATES]
+        draft = draft_all[:1]
+        rejected = [(v, st) for v, st, d in versions
+                    if st in self._REJECTED_STATES and _after_live(d)]
 
         if review:
             state = AuditState.REVIEWING
@@ -310,10 +332,63 @@ class AppleAdapter(StoreAdapter):
             reviewing_version_names=[v for v, _ in review],
             draft_version_names=draft,
             audit_note=note,
+            # 只有「审核通过、待开发者发布」可以手动一键上线；
+            # PENDING_APPLE_RELEASE 由苹果自动发布，PROCESSING_FOR_APP_STORE 正在处理，均无操作。
+            apple_release_now=any(st == "PENDING_DEVELOPER_RELEASE" for _, st in pending),
             review_message="",
             raw={"api_versions": versions},
             checked_at=utcnow_iso(),
         )
+
+    # ========== 状态卡操作：审核通过后立即发布 ==========
+
+    def release_now(self, package_name: str) -> Dict[str, Any]:
+        """把「审核通过、待开发者发布」的版本立即发布上线。
+
+        只有 PENDING_DEVELOPER_RELEASE（版本发布方式选「手动发布」）可以主动
+        触发，通过创建 appStoreVersionReleaseRequest 让苹果立即上架；
+        PENDING_APPLE_RELEASE 由苹果自动发布，PROCESSING_FOR_APP_STORE 正在
+        处理，两者都没有可调用的发布接口。
+        """
+        if not self._key_for(package_name):
+            raise StoreError(
+                f"Apple 应用 {package_name} 立即发布需要配置 api_key"
+                "（issuer_id / key_id / private_key_path）"
+            )
+        self._active_pkg = package_name
+        apple_app_id = self._apple_app_id(package_name)
+        data = self._asc_request(
+            "GET",
+            f"/apps/{apple_app_id}/appStoreVersions?limit=20"
+            f"&fields[appStoreVersions]=versionString,appStoreState,createdDate,platform",
+        )
+        target: Optional[Dict[str, Any]] = None
+        for v in data.get("data") or []:
+            at = v.get("attributes") or {}
+            if (at.get("platform") or "IOS") != "IOS":
+                continue
+            if at.get("appStoreState") == "PENDING_DEVELOPER_RELEASE":
+                target = v
+                break
+        if not target:
+            raise StoreError("没有「审核通过、待开发者发布」的版本，无需执行立即发布")
+
+        version_id = target.get("id") or ""
+        version_name = (target.get("attributes") or {}).get("versionString") or ""
+        self._asc_request("POST", "/appStoreVersionReleaseRequests", {
+            "data": {
+                "type": "appStoreVersionReleaseRequests",
+                "relationships": {
+                    "appStoreVersion": {
+                        "data": {"type": "appStoreVersions", "id": version_id},
+                    },
+                },
+            },
+        })
+        return {
+            "version": version_name,
+            "message": f"{version_name} 已提交立即发布，通常几分钟内在 App Store 生效",
+        }
 
     # ========== 发布（App Store Connect API，框架待测） ==========
 
