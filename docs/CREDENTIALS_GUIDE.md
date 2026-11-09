@@ -27,15 +27,43 @@
 
 获取：Google Cloud → 创建服务账号并下载 JSON → Play Console → 用户和权限 → 邀请服务账号（授予发布权限）。
 
-### Apple App Store（仅查询）
+### Apple App Store（查询 + 发布）
 
 | 字段 | 说明 |
 | --- | --- |
 | `apple.country` | 地区（默认 cn） |
-| `apple.apps` | 安卓包名 → App Store 数字 App ID 或 bundleId 映射 |
+| `apple.apps` | 安卓包名 → 数字 App ID（发布必须）或 bundleId（仅查询）；也可写成 `{"app_id": 数字ID, "api_key": {...}}` |
+| `apple.api_key` | 可选，**默认密钥**；只有所有应用都属于同一个开发者账号时才配置 |
+| `apple.apps.<包名>.api_key` | 该应用专属的 App Store Connect 密钥（issuer_id / key_id / private_key_path） |
+
+**不同开发者账号的 Key 不能混用**：一个 `.p8` 只能访问它所属账号下的应用。
+应用分散在多个账号时，请逐个应用配置 `apps.<包名>.api_key`，不要配顶层 `api_key`；
+顶层 `api_key` 只在该应用没有单独配置时作为回退。
 
 App Store 链接里的数字 ID：`https://apps.apple.com/cn/app/id1234567890` → `1234567890`。
-若无映射，直接用 bundleId（如 `com.example.app`）也能查。
+只查询时用 bundleId（如 `com.example.app`）也可以；**发布必须配数字 ID 和该账号的 api_key**。
+
+```json
+"apple": {
+  "country": "cn",
+  "apps": {
+    "com.kaidishi.lock": 1155786023,
+    "com.motorola.security": {
+      "app_id": 1234567890,
+      "api_key": {
+        "issuer_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "key_id": "NPLV7ZY2R5",
+        "private_key_path": "/Users/you/keys/app_stores/AuthKey_NPLV7ZY2R5.p8"
+      }
+    }
+  }
+}
+```
+
+- `.p8` 只在创建 Key 时可下载一次，丢失需吊销重建
+- Key 的角色需要 **App Manager**（或 Admin/Account Holder），否则拉构建会 403
+- 发布走「选择 TestFlight 已上传构建 → 关联版本 → 提交审核」，本机不需要 ipa
+- `apps` 里没有数字 ID 或没有可用密钥的应用，页面不会出现「苹果 App Store 信息」区块
 
 ### 小米应用商店
 

@@ -388,6 +388,7 @@ class GoogleAdapter(StoreAdapter):
             # 不再前台轮询等待 processing：bundles.list 返回的 Bundle 没有 status 字段，
             # 旧实现每次都白等满上限。改为直接提交，命中 5xx（安装包仍在处理）时退避重试。
             kill_cb = (release.metadata or {}).get("_kill_cb")
+            draft_fallback = False  # 应用不允许草稿时，自动降级为送审
             for attempt in range(_COMMIT_MAX_ATTEMPTS):
                 if kill_cb:
                     kill_cb()
@@ -400,9 +401,21 @@ class GoogleAdapter(StoreAdapter):
                         service.edits().commit(packageName=package, editId=edit_id).execute()
                     else:
                         # 存草稿不送审
-                        service.edits().commit(
-                            packageName=package, editId=edit_id, changesNotSentForReview=True
-                        ).execute()
+                        try:
+                            service.edits().commit(
+                                packageName=package, editId=edit_id, changesNotSentForReview=True
+                            ).execute()
+                        except Exception as e:
+                            # 该应用在 Play Console 开启了「更改自动送审」，API 不允许草稿参数，
+                            # 此时只能改为送审（否则 edit 会过期，安装包等于白传）
+                            if "changesNotSentForReview must not be set" not in str(e):
+                                raise
+                            draft_fallback = True
+                            if scb:
+                                scb("该应用不支持草稿（已开启更改自动送审），改为提交审核…")
+                            service.edits().commit(
+                                packageName=package, editId=edit_id
+                            ).execute()
                     break
                 except TaskKilledError:
                     raise
@@ -431,11 +444,14 @@ class GoogleAdapter(StoreAdapter):
                 ok=True,
                 message=(
                     f"已提交到 {release.track} 轨道（{path.name}，versionCode {version_code}）"
-                    + (f"，已自动送审（{mode_note}）" if auto_review else "，已保存为草稿（需到 Play Console 手动送审）")
+                    + (f"，已自动送审（{mode_note}）" if auto_review
+                       else "，该应用不支持草稿（已开启更改自动送审），已自动改为送审" if draft_fallback
+                       else "，已保存为草稿（需到 Play Console 手动送审）")
                 ),
                 remote_reference=edit_id,
                 state=AuditState.SUBMITTED,
-                raw={"edit_id": edit_id, "version_code": version_code, "is_aab": is_aab, "release_mode": release_mode},
+                raw={"edit_id": edit_id, "version_code": version_code, "is_aab": is_aab,
+                     "release_mode": release_mode, "draft_fallback": draft_fallback},
             )
         except TaskKilledError:
             # 用户停止：直接传播、不再清理 edit（清 edit 要多一次跨国 API 调用，

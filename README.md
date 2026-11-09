@@ -5,17 +5,19 @@
 
 > ⭐ 如果这个项目对你有帮助，可以顺手点个**Star**，非常感谢！🫶
 
-上传一次 APK/AAB，勾选平台即可同时发布到 **华为 / OPPO / vivo / 小米 / 荣耀 / 腾讯应用宝 / Google Play**（苹果仅查版本，发布为实验性），
+上传一次 APK/AAB，勾选平台即可同时发布到 **华为 / OPPO / vivo / 小米 / 荣耀 / 腾讯应用宝 / Google Play**；
+苹果 App Store 则直接从 TestFlight 已上传的构建里选一个提交审核（不需要本机 ipa），
 并随时查看各平台**审核进度**与**线上版本号**。
 
 内置 App发布中枢：多应用并行发布、按应用授权（owner / publisher / viewer）、定时上线、状态分享图、飞书群通知；也提供 CLI 便于脚本集成。
 
 ## 核心能力
 
-- **8 大平台全覆盖**：发布 + 查询（Apple 已实现 App Store Connect 提交审核，**实验性、未经真机实测**，默认仅用于查询已上架版本）
+- **8 大平台全覆盖**：发布 + 查询（Apple 走 App Store Connect 提交审核，**尚未真实发布实测**）
 - **统一发布模型**：一个应用配置 + 新 APK/AAB + 更新说明 → 选平台 → 一键发布
-- **平台多选发布**：App发布中枢可按勾选平台发布（排除 Apple），支持「全部平台」
+- **平台多选发布**：App发布中枢可按勾选平台发布，支持「全部平台」（「全部」不含 Apple，发苹果需显式勾选构建）
 - **华为 Harmony 构建版本发布**：从 AGC「软件包管理」拉取已上传的 Harmony 版本，选择后直接提交审核；选了版本时华为会**同时**发 Android 包（有 APK）并提交 Harmony，只发 Harmony 时不需要本机安装包
+- **苹果 TestFlight 构建发布**：从 App Store Connect 拉取已上传构建（版本号 / 构建号 / 处理状态），选中后关联版本并提交审核，本机不需要 ipa
 - **AAB / APK 版本一致性提示**：两个包都上传时自动比对 versionName / versionCode，不一致在版本下方提示（仅提示，不阻止分别发布）
 - **更新说明三语言默认文案**：`config/board.json` 的 `release_notes.defaults` 可配置简体 / 繁体 / 英文预填文案，提交时自动映射为 Google 的 `zh-TW` 与 Apple 的 `zh-Hant`
 - **定时上线**：小米/OPPO/vivo/荣耀/华为/腾讯应用宝 均支持定时发布（应用宝限提审 6 小时后、30 天内）
@@ -36,7 +38,7 @@
 | 平台 | 查询 | 发布 | 定时上线 | 定时/手动修改立即上线 | 备注 |
 | --- | --- | --- | --- | --- | --- |
 | Google Play | ✅ 三态 | ✅ | ❌ | ❌ | 发布需 **AAB**（APK 已不被接受）；可自动送审（勾选「Google 自动送审」）或存草稿后手动送审 |
-| Apple App Store | ✅ 版本 | ⚠️ 实验性 | — | — | 查询走 iTunes Lookup 公开接口；`publish()` 已实现（App Store Connect 提交审核）但**未经真实发布实测**，谨慎使用 |
+| Apple App Store | ✅ 版本 | ✅ 构建 | — | — | 查询走 iTunes Lookup；发布从 TestFlight 已上传构建里选一个，走 App Store Connect API（`/v1/builds` → 关联版本 → 提交审核），本机不需要 ipa；尚未真实发布实测 |
 | 小米应用商店 | ✅ | ✅ | ✅ | ❌ | X509 公钥 RSA 加密签名 |
 | OPPO 软件商店 | ✅ | ✅ | ✅ | ❌ | 更新自动复用现有发布资料 |
 | vivo 应用商店 | ✅ | ✅ | ✅ | ❌ | 上传 APK → 同步更新 |

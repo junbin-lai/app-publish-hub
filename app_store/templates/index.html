@@ -164,7 +164,7 @@ a:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--acc);outline-of
 </div>
 <div id="toast" class="overlay" role="status" aria-live="polite" style="display:none"></div>
 <script>
-var ST={apps:[],cats:[],cur:null,plt:[],POLL:null,POLLAPP:null,RUNNING:{},SHOWNFIN:{},l10nNotes:{zh:"",tw:"",en:""},l10nLang:"zh",META:{},RND:{},HV:null,HVAPP:null};
+var ST={apps:[],cats:[],cur:null,plt:[],POLL:null,POLLAPP:null,RUNNING:{},SHOWNFIN:{},l10nNotes:{zh:"",tw:"",en:""},l10nLang:"zh",META:{},RND:{},HV:null,HVAPP:null,AB:null,ABAPP:null};
 function $(v){return document.getElementById(v)}
 function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 // 构建产物只展示文件名：完整路径放进 dataset.path，不显示在界面上
@@ -330,19 +330,19 @@ function renderMain(){if(!ST.platforms&&!ST.apps.length){setTimeout(renderMain,2
 var rn=ST.RND||{};ST.l10nNotes={zh:rn["zh-CN"]||"",tw:rn["zh-TW"]||"",en:rn["en-US"]||""};ST.l10nLang="zh";ST.META={};
 var h='<div class=app-head><h2>'+esc(a.name)+'</h2>'+(a.category_display?'<span class=badge>'+esc(a.category_display)+'</span>':'')+(a.package_name?'<span class="badge" style=color:var(--ok)>'+esc(a.package_name)+'</span>':'<span class="badge err">未配包名</span>')+"</div>";
 var admin=isAdmin();
+// 只有本次上传或目录里记录的安装包文件真实存在时才展示版本号，避免显示已失效的旧版本
+var _pkgOk=!!(a.apk_exists||a.aab_exists);
 h+='<div class=grid><div class=card><h3>构建产物'+(admin?'':' <span class="muted" style="font-size:var(--font-caption)">（只读账号）</span>')+'</h3>'+
 '<div class=input-row><input id=paab value="" placeholder="AAB (Google Play)" '+(admin?'':'disabled')+'><button class=sm secondary onclick=selBuild("aab") '+(admin?'':'disabled title="只读账号不可上传"')+'>选择…</button></div>'+
 '<div class=input-row><input id=papk value="" placeholder="APK (国内平台)" '+(admin?'':'disabled')+'><button class=sm secondary onclick=selBuild("apk") '+(admin?'':'disabled title="只读账号不可上传"')+'>选择…</button></div>'+
 '<div id="papkAlert" style="font-size:var(--font-caption);margin:var(--space-1) 0;min-height:16px"></div>'+
 '<div style="margin-top:var(--space-3);border-top:1px solid var(--hairline);padding-top:var(--space-3)"><div class="eyebrow" style="margin-bottom:var(--space-2)">Android 信息</div>'+
 '<div class=row><span class=k>包名</span><span class=v>'+esc(a.package_name||"未填")+'</span></div>'+
-'<div class=row><span class=k>versionName</span><span class=v>'+esc(a.version_name||"-")+'</span></div>'+
-'<div class=row><span class=k>versionCode</span><span class=v>'+(a.version_code==null||a.version_code===""?"-":esc(a.version_code))+'</span></div>'+
+'<div class=row><span class=k>versionName</span><span class=v>'+esc(_pkgOk?(a.version_name||"-"):"-")+'</span></div>'+
+'<div class=row><span class=k>versionCode</span><span class=v>'+(_pkgOk&&a.version_code!=null&&a.version_code!==""?esc(a.version_code):"-")+'</span></div>'+
 '<div id="pverAlert" style="font-size:var(--font-caption);margin:var(--space-1) 0 0"></div>'+
-'</div>'+harmonyBlockHTML(a)+'</div>';
+'</div>'+harmonyBlockHTML(a)+appleBlockHTML(a)+'</div>';
 h+='<div class=card><h3>发布</h3>'+
-'<div><label for="ipvn">版本名</label><input id="ipvn" readonly value=""></div>'+
-'<div><label for="ipvc">versionCode</label><input id="ipvc" readonly value=""></div>'+
 '<div><label>发布平台（可多选）</label><div id="ipp" style="display:flex;flex-wrap:wrap;gap:var(--space-2)">'+publishPlatsHTML()+'</div><div style="margin-top:var(--space-2)"><button type=button class=sm secondary onclick=platAll(1)>全选</button> <button type=button class=sm secondary onclick=platAll(0)>清空</button></div></div>'+
 '<div><label for="ipv">轨道（Google）</label><select id="ipv"><option>production</option><option>beta</option><option>alpha</option><option>internal</option></select></div>'+'<div><label for="iprm">Google 发布方式</label><select id="iprm"><option value="staged" selected>分阶段发布（审核通过后先放百万分之一，再手动全量）</option><option value="full">全量发布（审核通过后自动 100% 上线）</option></select></div>'+
 '<div><label for="ipn">更新说明</label><div class="l10n-tabs"><button type="button" class="sm secondary l10n-tab active" id="tabZh" onclick="swL10n(\'zh\')">中文</button><button type="button" class="sm secondary l10n-tab" id="tabTw" onclick="swL10n(\'tw\')">繁體</button><button type="button" class="sm secondary l10n-tab" id="tabEn" onclick="swL10n(\'en\')">English</button></div><textarea id="ipn" rows="3" placeholder="更新说明（中文）"></textarea><div class="form-group"><label for="pot">定时上线（留空=立即）</label><input id="pot" type="datetime-local"></div></div>'+
@@ -357,9 +357,32 @@ h+='<div class=card><h3>发布</h3>'+
 $("appc").innerHTML=h;
 // 预填简体中文默认文案（繁体/英文随 tab 切换保留在 ST.l10nNotes 里）
 if($("ipn"))$("ipn").value=ST.l10nNotes.zh||"";
-if($("ipvn"))$("ipvn").value=a.version_name||"";
-if($("ipvc"))$("ipvc").value=(a.version_code==null?"":a.version_code);
-if(a.huawei_harmony_package)loadHarmony(false)}
+if(a.huawei_harmony_package)loadHarmony(false);if(a.apple_ready)loadApple(false)}
+// 苹果构建选择：从 TestFlight 拉取已上传构建（不参与打包）
+function appleBlockHTML(a){if(!a.apple_ready)return"";
+return '<div style="margin-top:var(--space-3);border-top:1px solid var(--hairline);padding-top:var(--space-3)">'+
+'<div class="eyebrow" style="margin-bottom:var(--space-2)">苹果 App Store 信息</div>'+
+'<div><label for="pab">构建版本（TestFlight）</label>'+
+'<div class="input-row"><select id="pab" style="flex:1"><option value="">加载中…</option></select>'+
+'<button type=button class="sm secondary" onclick="loadApple(true)">拉取构建</button></div>'+
+'<div id="pabHint" class="muted" style="font-size:var(--font-caption);margin-top:var(--space-1)">勾选 App Store 并选构建 → 提交审核；版本号取自该构建</div></div>'+
+'</div>'}
+function loadApple(force){var a=ST.cur;if(!a||!a.apple_ready)return;
+var sel=$("pab"),hint=$("pabHint");if(!sel)return;
+if(!force&&ST.ABAPP===a.id&&ST.AB){renderAppleSel();return}
+if(hint)hint.textContent="正在从 App Store Connect 拉取构建…";
+api("/api/apple/builds?app_id="+encodeURIComponent(a.id)).then(function(r){
+if(!sel)return;
+if(!r||!r.ok){sel.innerHTML='<option value="">加载失败</option>';if(hint)hint.textContent="拉取失败："+((r&&r.error)||"未知错误");return}
+var rows=r.builds||[];ST.AB=rows;ST.ABAPP=a.id;
+if(!rows.length){sel.innerHTML='<option value="">没有已上传构建</option>';if(hint)hint.textContent="TestFlight 里还没有可用构建（上传后需处理完成）";return}
+renderAppleSel();
+if(hint)hint.textContent="共 "+rows.length+" 个构建（版本号 / 构建号 / 状态），选择后点「发布」提交审核"})}
+function renderAppleSel(){var sel=$("pab"),rows=ST.AB||[];if(!sel)return;
+var h='<option value="">不提交 Apple（本次跳过）</option>';
+rows.forEach(function(v,i){var s=(v.version_name||"?")+" ("+(v.build_number||"?")+")"+(v.processing_state&&v.processing_state!=="VALID"?" · "+v.processing_state:"");
+h+='<option value="'+i+'">'+esc(s)+'</option>'});
+sel.innerHTML=h}
 // 华为 Harmony 构建版本选择：从 AGC 软件包管理拉取已上传版本
 function harmonyBlockHTML(a){var hp=a.huawei_harmony_package;if(!hp)return"";
 return '<div style="margin-top:var(--space-3);border-top:1px solid var(--hairline);padding-top:var(--space-3)">'+
@@ -397,7 +420,7 @@ fetch("/api/build/upload",{method:"POST",body:fd}).then(function(r){return r.jso
 var inp=$(t==="aab"?"paab":"papk");inp.value=bn(res.path);inp.dataset.path=res.path;lg("已保存: "+bn(res.path),"ok");toast("已选择 "+(t==="aab"?"AAB":"APK")+": "+file.name);
 autoMeta(res.path,ST.cur.id,t)}).catch(function(e){busy(false);lg("上传异常: "+e,"err")})}
 function cm(){document.querySelectorAll(".overlay").forEach(function(e){if(e.id!=="toast")e.remove()})}
-function publishPlatsHTML(){var pubs=(ST.platforms||[]).filter(function(p){return p.platform!=="apple"});var labelMap={huawei:"华为",oppo:"OPPO",vivo:"VIVO",xiaomi:"小米",honor:"荣耀",google:"Google Play",qq:"应用宝"};return pubs.map(function(p){var nm=labelMap[p.platform]||p.display_name;var badge=p.availability==="ready"?"":"(骨架)";return '<label class=plat-item><input type=checkbox class=plat-cb value="'+p.platform+'" '+""+'><span>'+nm+'</span>'+badge+'</label>'}).join("")}
+function publishPlatsHTML(){var app=ST.cur||{};var pubs=(ST.platforms||[]).filter(function(p){return p.platform!=="apple"||app.apple_ready});var labelMap={huawei:"华为",oppo:"OPPO",vivo:"VIVO",xiaomi:"小米",honor:"荣耀",google:"Google Play",apple:"App Store",qq:"应用宝"};return pubs.map(function(p){var nm=labelMap[p.platform]||p.display_name;var badge=p.availability==="ready"?"":"(骨架)";return '<label class=plat-item><input type=checkbox class=plat-cb value="'+p.platform+'" '+""+'><span>'+nm+'</span>'+badge+'</label>'}).join("")}
 function platAll(on){document.querySelectorAll(".plat-cb").forEach(function(c){c.checked=!!on})}
 function selPlats(){var arr=[];document.querySelectorAll(".plat-cb:checked").forEach(function(c){arr.push(c.value)});return arr.length?arr.join(","):"all"}
 // === 平台状态查询卡：勾选独立于发布平台，包含苹果（Apple 仅查询，不出现在发布勾选里） ===
@@ -411,8 +434,6 @@ var exp=((a&&a.package_name)||"").trim();var real=(r.package_name||"").trim();
 if(exp&&real){if(real!==exp){msg='<span style="color:var(--err)">'+iconSvg("warn")+' 包名不一致：安装包='+esc(real)+' vs 配置='+esc(exp)+'</span>';lg("包名不一致! "+real+" ≠ "+exp,"err");if(al)al.innerHTML=msg}
 else{msg='<span style="color:var(--ok)">'+iconSvg("check")+' 包名一致：'+esc(real)+'</span>';lg("包名一致: "+real,"ok");if(al)al.innerHTML=msg}}
 // 版本信息回填（AAB / APK 都会解析 versionName、versionCode）
-if($("ipvn"))$("ipvn").value=r.version_name||($("ipvn").value||"");
-if($("ipvc"))$("ipvc").value=(r.version_code==null?($("ipvc").value||""):r.version_code);
 metaRec(type,r);
 // 保存选择路径 + 版本到目录
 var fields={app_id:appId};if(type==="aab")fields.aab_build=path;else fields.apk_build=path;
@@ -421,6 +442,8 @@ if(r.version_code!=null)fields.version_code=r.version_code;
 api("/api/apps/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(fields)}).then(function(ur){lg("已保存 "+(type==="aab"?"AAB":"APK")+" 路径与版本","ok");var cp=(ur&&ur.cleanup)||null;if(cp&&cp.removed&&cp.removed.length){var mb=(cp.freed/1048576).toFixed(1);lg("已自动清理 "+cp.removed.length+" 个未引用旧包, 释放 "+mb+"MB","ok");toast("清理了 "+cp.removed.length+" 个旧包 ("+mb+"MB)")}if(ST.cur&&ST.cur.id===appId){
 // 注意: r 是外层 APK 解析结果(含 version_name/version_code); ur 是本次 update 响应(含 cleanup)
 ST.cur.version_name=r.version_name||ST.cur.version_name;ST.cur.version_code=(r.version_code!=null?r.version_code:ST.cur.version_code);
+// 本次已上传并绑定安装包 → 标记存在，切走再回来仍能显示版本号
+if(type==="aab")ST.cur.aab_exists=true;else ST.cur.apk_exists=true;
 // 就地更新应用信息显示（不整卡重渲染，避免打断其他操作）；头部不放版本徽标，版本在下方信息行展示
 var rows=document.querySelectorAll('#appc .card .row');rows.forEach(function(ro){var k=ro.querySelector('.k');if(!k)return;if(k.textContent==='versionName'&&r.version_name){var v=ro.querySelector('.v');if(v)v.textContent=r.version_name}if(k.textContent==='versionCode'&&r.version_code!=null){var v2=ro.querySelector('.v');if(v2)v2.textContent=r.version_code}});
 }})
@@ -460,7 +483,18 @@ if(apkMandatory)apkPath=ap_in||a.apk_build||"";
 else if(huaweiSel)apkPath=hv?(ap_in||""):(ap_in||a.apk_build||"");
 if(huaweiSel&&!apkPath&&!hv){toast("请上传 APK 或选择 Harmony 构建版本","err");return}
 if(hv)lg(apkPath?"华为将同时发布 Android 包并提交 Harmony "+(hv.version_name||""):"华为仅提交 Harmony "+(hv.version_name||"")+"（未提供 APK）","ok");
-var body={app_id:a.id,platform:plats,dry_run:$("ipdry").checked,auto_review:$("ipauto").checked,release_mode:$("iprm").value,version_name:$("ipvn").value.trim(),version_code:parseInt($("ipvc").value)||null,release_notes:zhNotes,release_notes_l10n:l10n,track:$("ipv").value,aab_path:(needAab?(ab_in||a.aab_build||""):""),apk_path:apkPath,harmony_version:hv,online_time:document.getElementById("pot")?document.getElementById("pot").value.trim():""};
+// Apple：选了 TestFlight 构建才提交，必须勾选 App Store（未勾平台=全部时不强制）
+var ab=null,abSel=$("pab");
+if(abSel&&abSel.value!=="")ab=(ST.AB||[])[parseInt(abSel.value,10)]||null;
+var appleChecked=plist.indexOf("apple")>=0;
+if(appleChecked&&!ab){toast("请先选择苹果构建版本","err");return}
+if(ab&&plats!=="all"&&!appleChecked){toast("已选择苹果构建，请勾选 App Store 平台","err");return}
+if(ab&&ab.processing_state&&ab.processing_state!=="VALID"){toast("苹果构建尚未处理完成（"+ab.processing_state+"），暂不能提交","err");return}
+if(ab)lg("Apple 将提交构建 "+(ab.version_name||"")+" ("+(ab.build_number||"")+")","ok");
+// 版本名/versionCode 不再单独展示（构建版本已在各平台信息区显示）：取本次解析的包信息，回落到目录配置
+var _m=ST.META||{},_mv=(_m.apk&&_m.apk.vn?_m.apk:(_m.aab&&_m.aab.vn?_m.aab:null))||{};
+var _vn=(_mv.vn||a.version_name||"").trim(),_vc=(_mv.vc!==undefined&&_mv.vc!==""?_mv.vc:a.version_code);
+var body={app_id:a.id,platform:plats,dry_run:$("ipdry").checked,auto_review:$("ipauto").checked,release_mode:$("iprm").value,version_name:_vn,version_code:(_vc==null||_vc===""?null:(parseInt(_vc,10)||null)),release_notes:zhNotes,release_notes_l10n:l10n,track:$("ipv").value,aab_path:(needAab?(ab_in||a.aab_build||""):""),apk_path:apkPath,harmony_version:hv,apple_build:ab,online_time:document.getElementById("pot")?document.getElementById("pot").value.trim():""};
 // 不再全局 busy(true) 锁页面：多应用可并行发布，切到其他应用立即可操作；
 // 同应用重复发布由服务端拦截并返回明确错误
 lg("== "+(body.dry_run?"Dry-run":"正式")+"发布 "+(a.name||a.id)+" ==");api("/api/publish",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(r){if(r.task_id){lg("任务: "+r.task_id);dlog("publish: 启动成功 tid="+r.task_id+" app="+a.id+" → 记入 RUNNING 并开始轮询");ST.RUNNING[a.id]={id:r.task_id,app_id:a.id,version_name:body.version_name||""};renderSb();startPoll(r.task_id,a.id)}else{dlog("publish: 启动失败 app="+a.id+" 响应="+JSON.stringify(r).slice(0,200));lg("启动失败: "+JSON.stringify(r),"err")}})}

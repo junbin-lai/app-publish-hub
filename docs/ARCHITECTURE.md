@@ -11,7 +11,7 @@ Registry (registry.py) -- 按平台名惰性加载适配器
      +-- StoreAdapter (base.py) -- 抽象基类
          |
          +-- GoogleAdapter (stores/google.py)  ready  (publish+query)
-         +-- AppleAdapter  (stores/apple.py)   ready  (query；publish 已实现但实验性/待实测)
+         +-- AppleAdapter  (stores/apple.py)   ready  (query: ASC API + 网页回退；publish: 构建选择，待实测)
          +-- XiaomiAdapter (stores/xiaomi.py)  ready  (publish+query+定时)
          +-- OPPOAdapter   (stores/oppo.py)    ready  (publish+query+定时)
          +-- VivoAdapter   (stores/vivo.py)    ready  (publish+query+定时)
@@ -23,7 +23,7 @@ Registry (registry.py) -- 按平台名惰性加载适配器
 
 - `Platform`：枚举 google/apple/xiaomi/oppo/vivo/honor/huawei
 - `AuditState`：DRAFT / SUBMITTED / REVIEWING / REJECTED / PUBLISHED / UNKNOWN
-- `Release`：包名、版本名、版本号、APK/AAB 路径、更新说明、metadata（online_time / release_notes_l10n / harmony_package / harmony_version 等）
+- `Release`：包名、版本名、版本号、APK/AAB 路径、更新说明、metadata（online_time / release_notes_l10n / harmony_package / harmony_version / apple_build 等）
 - `SubmitResult`：平台、成功与否、消息、remote_reference（任务 ID）
 - `StoreStatus`：live_version_names/codes、draft_version_names、reviewing_version_names、review_message
 

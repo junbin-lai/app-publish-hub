@@ -287,8 +287,8 @@ dry-run 校验、被手动停止、只存草稿等场景默认静默。判定口
 1. **顶部**：当前选中应用信息（名称 / 包名 / 版本）；右上角「用户管理」（owner，可增删改账号与应用授权）/「我的账号」（其他角色，只能查看并修改自己的密码）
 2. **三列卡片**
    - **应用信息**：包名、versionName、versionCode（未选包时版本显示 "-"）
-   - **构建产物**：**Android 信息**（AAB/APK **选择文件上传**，区分 .aab / .apk，选后自动解析版本/包名）+ **华为 Harmony 信息**（应用配置了 `huawei_harmony_package` 才出现：Harmony 包名、构建版本下拉、「拉取版本」按钮）
-   - **发布**：版本名、版本号（选包后自动回填）、**平台多选复选框**、更新说明（中文 / 繁體 / English 三个 tab）、**定时上线时间选择**、发布/查询按钮
+   - **构建产物**：**Android 信息**（AAB/APK **选择文件上传**，区分 .aab / .apk，选后自动解析版本/包名；versionName / versionCode **只在安装包文件真实存在时显示**——目录里记录的旧包被清理后显示 `-`，需重新选择上传）+ **华为 Harmony 信息**（应用配置了 `huawei_harmony_package` 才出现：Harmony 包名、构建版本下拉、「拉取版本」按钮）+ **苹果 App Store 信息**（应用配了 Apple API 密钥才出现：TestFlight 构建下拉、「拉取构建」按钮）
+   - **发布**：**平台多选复选框**、更新说明（中文 / 繁體 / English 三个 tab）、**定时上线时间选择**、发布/查询按钮；版本名/versionCode 不再在发布区重复展示（Android 信息行、Harmony 构建、Apple 构建各自已显示对应版本）
    - 同时上传 AAB 与 APK 时，Android 信息的版本行下方自动比对 versionName / versionCode：一致显示绿色；不一致显示黄色差异提示（**只提示，不阻止分别发布**——Google 与国内平台可能用不同的包）
 3. **平台状态**：各平台已上架版本、审核状态、草稿版本（三行）
 4. **日志**：发布任务进度与结果（按应用独立；切回正在发布的应用会自动恢复其进度）
@@ -296,7 +296,7 @@ dry-run 校验、被手动停止、只存草稿等场景默认静默。判定口
 ## 发布操作步骤
 
 1. 左侧选择目标 App → 右侧加载应用信息
-2. 在「构建产物」点击 **"选择…"** 上传 APK/AAB → 自动解析版本名、versionCode、包名校验并回填发布表单
+2. 在「构建产物」点击 **"选择…"** 上传 APK/AAB → 自动解析版本名、versionCode、包名校验，并更新 Android 信息与目录里的版本
 3. 要发华为 Harmony 时：在「华为 Harmony 信息」点 **「拉取版本」**（从 AGC 软件包管理拉取已上传构建），
    在下拉里选要提审的版本；**留空 = 华为只发 Android 包**
 4. 确认：
@@ -310,7 +310,7 @@ dry-run 校验、被手动停止、只存草稿等场景默认静默。判定口
 ### 平台多选注意
 
 - 复选框全选/清空按钮在平台列表下方
-- Apple 不参与发布（仅查询）
+- **Apple**：只有该应用配置了可用的 API 密钥（`apple.apps.<包名>.api_key`，或回退顶层 `apple.api_key`）且为数字 App ID 时才出现 App Store 选项；不同开发者账号的 p8 必须按应用分别配置，不能混用。勾选后必须在「苹果 App Store 信息」里选一个 TestFlight 构建，版本号自动取自该构建（「全部」不含 Apple，需显式勾选）
 - **华为 Harmony**：勾选华为并在 Harmony 下拉里选了版本 → 同一任务做两步（有 APK 时先发 Android 包提审，再提交 Harmony）；
   只发 Harmony（不传 APK）时华为只提交 AGC 上已有的版本
 - 选了 Harmony 版本必须勾选华为；只勾华为但既没 APK 也没选版本会被拦截并提示
@@ -341,6 +341,28 @@ Harmony 的正式包由开发同学先上传到 AGC「软件包管理」，App�
   - 没有 APK + 选了版本 → 只提交 Harmony（不需要本机安装包）
   - 有 APK + 没选版本 → 只发 Android 包
   - 两步中一步失败时，任务会明确提示「另一部分已提交成功，请勿重复提交」
+
+### 苹果 App Store 发布（TestFlight 已上传构建）
+
+和 Harmony 一样，本系统**不参与打包/上传 ipa**：ipa 由 Xcode / Transporter / CI 传到 App Store Connect，
+这里只拉取已上传的构建并提交审核。
+
+前提配置：
+
+1. `config/credentials.json` 的 `apple.api_key` 配 `issuer_id` / `key_id` / `private_key_path`（`.p8` 绝对路径）
+2. `apple.apps` 配该应用的数字 App ID（如 `1671595666`）；发布不能用 bundleId
+3. API Key 角色为 **App Manager**，构建需处理完成（`processingState=VALID`）
+
+发布行为：
+
+- 「苹果 App Store 信息」点「拉取构建」→ 调 `GET /v1/builds?filter[app]=<ID>`，列出 `版本号 (构建号)`，非 VALID 会标注状态
+- 勾选 App Store 平台并选构建后，版本号自动取自该构建；**勾了 App Store 但不选构建会直接拦下**，下拉首项「不提交 Apple」= 本次跳过苹果
+  （仅直接调 `/api/publish` 不传 `apple_build` 时，后端才会按 `version_name` 自动匹配构建）
+- 提交时：创建/复用 `appStoreVersions` → 关联所选 build → 写入三语言更新说明 → `reviewSubmissions` 提交审核
+- 「全部平台」不含 Apple，需要显式勾选 App Store
+- 状态查询：配置密钥后走 `GET /v1/apps/{数字ID}/appStoreVersions`，返回版本与审核状态
+  （`等待审核` / `审核中` / `审核通过，待发布` / `被拒绝`），在状态卡与分享图中和华为/Google 等平台同款展示；
+  未配密钥时回退 iTunes Lookup + 页面解析，只能显示线上版本
 
 ### 多应用并行发布
 
@@ -443,6 +465,12 @@ Content-Type: application/json
 }
 ```
 
+Apple 状态说明：应用配置了 API 密钥且 `apps` 里是数字 App ID 时，`state` 与
+`reviewing_version_names` / `draft_version_names` / `audit_note` 由 App Store Connect 的
+`appStoreVersions.appStoreState` 推导（`READY_FOR_SALE`→已上架、`WAITING_FOR_REVIEW`/`IN_REVIEW`→审核中、
+`PENDING_*`→待发布、`PREPARE_FOR_SUBMISSION`→草稿、`REJECTED`→已拒绝）；
+未配置密钥时回退网页解析，只有 `published` 与线上版本号。
+
 ### 发布
 
 ```http
@@ -462,6 +490,7 @@ Content-Type: application/json
     "en-US": "1. Fix known issues and optimize product experience;"
   },
   "harmony_version": {"version_name": "2.2.1", "version_code": 1000395, "version_id": "..."},
+  "apple_build": {"build_id": "abc-123", "version_name": "4.19.1", "build_number": "219"},
   "online_time": "2026-09-01T10:00"
 }
 ```
@@ -469,6 +498,7 @@ Content-Type: application/json
 - `platform`：逗号分隔多个；`"all"` = 全部已配平台（不含 Apple）
 - `release_notes_l10n`：多语言更新说明，键用 `zh-CN` / `zh-TW` / `en-US`，提交时自动映射（Google `zh-TW`，Apple `zh-Hant`）
 - `harmony_version`：华为 Harmony 要提审的 AGC 已上传版本（取自 `/api/harmony/versions`）；不传则华为只发 Android 包
+- `apple_build`：苹果要提审的 TestFlight 构建（取自 `/api/apple/builds`，`{build_id, version_name, build_number}`）；不传则按 `version_name` 自动匹配构建
 - `online_time`：ISO 格式时间（`YYYY-MM-DDTHH:MM`），留空=立即
 - 需要 `publisher` / `owner` 角色，且账号必须持有该 `app_id` 的授权；越权调用会记审计并触发飞书安全告警
 - 同一应用已有运行中任务时返回 400，错误信息里带上现有任务 id / 操作者 / 开始时间；不同应用可同时发布
@@ -525,6 +555,27 @@ GET /api/harmony/versions?app_id=kaadas-smart
 ```
 
 要求：应用在 catalog 里配置了 `huawei_harmony_package`，且 `credentials.json` 中该 Harmony 包名的条目带 `app_kind: "harmony"`。
+
+### 获取苹果可提审构建
+
+```http
+GET /api/apple/builds?app_id=kaadas-smart
+```
+
+从 App Store Connect 拉取 TestFlight 已上传构建（按上传时间倒序，已过期不返回）：
+
+```json
+{
+  "ok": true,
+  "package_name": "com.kaidishi.lock",
+  "builds": [
+    {"build_id": "abc-123", "version_name": "4.19.1", "build_number": "219",
+     "processing_state": "VALID", "uploaded_date": "2026-11-01T09:12:33-07:00"}
+  ]
+}
+```
+
+要求：`apple.api_key` 已配置且该应用有数字 App ID；`processing_state` 非 `VALID` 的构建不能提交。
 
 ### 校验凭证
 

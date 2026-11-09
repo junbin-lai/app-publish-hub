@@ -1,6 +1,6 @@
 # 各平台接入清单（2026-08 实测）
 
-> 全部平台已实现 publish + query_status（Apple 仅 query）。以下为各平台实测用的接口与凭证要点。
+> 全部平台已实现 publish + query_status。以下为各平台实测用的接口与凭证要点。
 
 ## Google Play
 
@@ -9,7 +9,7 @@
 | API | androidpublisher v3（google-api-python-client） |
 | 认证 | 服务账号 OAuth2（Google Cloud 创建服务账号并授予 Play Console 权限） |
 | 凭证 | `google.service_account_json` |
-| 发布 | ✅ 支持自动送审：status=completed + edits().commit()（勾选「Google 自动送审」）；不勾则 status=draft + changesNotSentForReview=True 存草稿 |
+| 发布 | ✅ 支持自动送审：status=completed + edits().commit()（勾选「Google 自动送审」）；不勾则 status=draft + changesNotSentForReview=True 存草稿。若应用在 Play Console 开启了「更改自动送审」，Google 会拒绝该参数（400 `changesNotSentForReview must not be set`），此时自动去掉参数改为送审并在任务日志注明 |
 | 查询 | ✅ 三态：live（completed）/ draft（未送审）/ reviewing（审核中） |
 
 **注意**：应用若已是 AAB-only，传 APK 会报 `APKs are not allowed for this application`，必须传 AAB。
@@ -18,10 +18,13 @@
 
 | 项目 | 说明 |
 | --- | --- |
-| 查询 | iTunes Lookup 公开接口（https://itunes.apple.com/lookup） |
-| 认证 | 无（公开） |
-| 凭证 | `apple.apps`：安卓包名 → 数字 App ID 或 bundleId |
-| 发布 | ❌ 不支持（仅查询已上架版本） |
+| 查询 | 优先 App Store Connect API：`GET /v1/apps/{数字ID}/appStoreVersions`（版本 + 审核状态）；未配密钥时回退 iTunes Lookup + apps.apple.com 页面（只能拿到线上版本） |
+| 认证 | App Store Connect API：ES256 JWT（issuer_id + key_id + .p8），令牌有效期 20 分钟 |
+| 凭证 | `apple.apps`：包名 → 数字 App ID（可选带该应用专属 `api_key`）；顶层 `apple.api_key` 为默认密钥，应用分属多个开发者账号时必须逐应用配置 |
+| 拉构建 | ✅ `GET /v1/builds?filter[app]=<数字ID>&sort=-uploadedDate&include=preReleaseVersion`（返回商店版本号 + 构建号 + processingState） |
+| 发布 | ✅ 选 TestFlight 已上传构建 → 创建 `appStoreVersions` → PATCH build 关联 → 写本地化更新说明 → `reviewSubmissions` 提交审核 |
+| 前提 | Key 角色需 App Manager；构建需处理完成（`processingState=VALID`） |
+| 状态映射 | `READY_FOR_SALE`→已上架；`WAITING_FOR_REVIEW`/`IN_REVIEW`→审核中；`PENDING_APPLE_RELEASE`/`PENDING_DEVELOPER_RELEASE`/`PROCESSING_FOR_APP_STORE`→待发布；`PREPARE_FOR_SUBMISSION`→草稿；`REJECTED`/`DEVELOPER_REJECTED`→已拒绝 |
 
 ## 小米应用商店
 

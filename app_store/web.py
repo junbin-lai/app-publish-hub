@@ -49,7 +49,10 @@ from . import feishu_bot
 
 PLATFORM_VALUES = {p.value for p in Platform}
 
-PUBLISH_PLATFORMS = {p for p in PLATFORM_VALUES if p != "apple"}
+# Apple 也参与发布（提交 TestFlight 已上传的构建，不参与打包）
+PUBLISH_PLATFORMS = set(PLATFORM_VALUES)
+# 「全部平台」默认不含 Apple：只有显式勾选（或选了苹果构建）才发，避免没配密钥的账号被拖失败
+ALL_PLATFORMS = PUBLISH_PLATFORMS - {"apple"}
 
 # ---- 任务持久化 ----
 # APPSTORE_HISTORY_FILE 供测试隔离：跑测试服务/模拟脚本时指到临时文件，
@@ -655,7 +658,10 @@ def _publish_worker(tid: str):
         # 先解析目标平台，再构造 Release：安装包路径只按目标平台附带，
         # 避免目录里保存的其他平台旧路径（如已被清理的 APK 文件）阻塞本次发布
         if platform == "all":
-            targets = [k for k in creds if k in PUBLISH_PLATFORMS]
+            targets = [k for k in creds if k in ALL_PLATFORMS]
+            # 前端选了苹果构建时，「全部」也把 Apple 带上
+            if params.get("apple_build") and "apple" in creds:
+                targets.append("apple")
             display = "全部已配平台"
         elif "," in platform:
             parts = [p.strip() for p in platform.split(",") if p.strip() in PUBLISH_PLATFORMS]
@@ -677,7 +683,7 @@ def _publish_worker(tid: str):
         # 只发华为且选了 Harmony 版本时可只用 AGC 上的包（不传本机 APK）
         harmony_pkg = str(_app.get("huawei_harmony_package") or "").strip()
         harmony_sel = bool(harmony_pkg and params.get("harmony_version"))
-        apk_mandatory = any(t not in ("google", "huawei") for t in targets)
+        apk_mandatory = any(t not in ("google", "huawei", "apple") for t in targets)
         aab_p = params.get("aab", "") or (_b["aab"] if need_aab else "")
         apk_p = params.get("apk", "")
         if not apk_p and apk_mandatory:
@@ -704,6 +710,9 @@ def _publish_worker(tid: str):
         if harmony_sel:
             release.metadata["harmony_package"] = harmony_pkg
             release.metadata["harmony_version"] = params["harmony_version"]
+        if params.get("apple_build"):
+            # Apple：提交 TestFlight 已上传的构建（不传本机安装包）
+            release.metadata["apple_build"] = params["apple_build"]
         _step(tid, f"包名: {release.package_name} v{release.version_name or '?'}")
         if release.version_name:
             _update(tid, version_name=release.version_name)  # 实际发布的版本号（含 catalog 回落）
@@ -1457,9 +1466,31 @@ class Handler(BaseHTTPRequestHandler):
                 # 分类只保留有可见应用的项，避免空分类出现在侧栏
                 cats = [c for c in catalog.categories()
                         if any(a.get("category") == c for a in apps)]
+                # Apple 是否可用：该应用有数字 App ID，且（自己的或顶层的）api_key 三项齐全
+                apple_cfg = (load_credentials(self.credentials_path).get("apple") or {})
+                apple_apps = apple_cfg.get("apps") or {}
+                apple_key = apple_cfg.get("api_key") or {}
+
+                def _key_ok(k: dict) -> bool:
+                    return bool(k and k.get("issuer_id") and k.get("key_id")
+                                and k.get("private_key_path"))
+
+                payload_apps = []
+                for a in apps:
+                    item = catalog.status_payload(a["id"])
+                    entry = apple_apps.get(item.get("package_name") or "")
+                    if isinstance(entry, dict):
+                        aid = str(entry.get("app_id") or "").strip()
+                        key_ok = _key_ok(entry.get("api_key") or apple_key)
+                    else:
+                        aid = str(entry or apple_cfg.get("app_id") or "").strip()
+                        key_ok = _key_ok(apple_key)
+                    # 发布必须用数字 App ID（bundleId 只能查询），且密钥齐全
+                    item["apple_ready"] = bool(aid.isdigit() and key_ok)
+                    payload_apps.append(item)
                 payload = {
                     "categories": [{"name": c} for c in cats],
-                    "apps": [catalog.status_payload(a["id"]) for a in apps],
+                    "apps": payload_apps,
                 }
                 return _json_response(self, payload)
             if path == "/api/app/icon":
@@ -1468,6 +1499,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_google_bundles()
             if path == "/api/harmony/versions":
                 return self._api_harmony_versions()
+            if path == "/api/apple/builds":
+                return self._api_apple_builds()
             if path == "/api/google/apk/check":
                 return self._api_google_apk_check()
             if path == "/api/google/apk":
@@ -2006,6 +2039,36 @@ class Handler(BaseHTTPRequestHandler):
         rows = adapter.list_harmony_versions(package)
         return _json_response(self, {"ok": True, "package_name": package, "versions": rows})
 
+    def _api_apple_builds(self):
+        """Apple：TestFlight 已上传的构建列表（供发布前勾选，不参与打包）。
+
+        返回 [{build_id, version_name, build_number, processing_state, uploaded_date}]，
+        按上传时间倒序，已过期构建不返回。
+        """
+        qs = parse_qs(urlparse(self.path).query)
+        app_id = (qs.get("app_id") or [""])[0].strip()
+        if not app_id:
+            raise StoreError("缺少 app_id")
+        if self._app_denied(app_id):
+            return
+        app = self._catalog().get_app(app_id)
+        package = str(app.get("package_name") or "").strip()
+        if not package:
+            raise StoreError("该应用未配置包名（package_name）")
+        creds = load_credentials(self.credentials_path)
+        apple_cfg = creds.get("apple") or {}
+        entry = (apple_cfg.get("apps") or {}).get(package)
+        key = (entry.get("api_key") if isinstance(entry, dict) else None) \
+            or apple_cfg.get("api_key") or {}
+        if not key:
+            raise StoreError(
+                f"应用 {package} 未配置 Apple API 密钥"
+                "（credentials.json apple.apps.<包名>.api_key 或 apple.api_key）"
+            )
+        adapter = get_adapter("apple", creds)
+        rows = adapter.list_builds(package)
+        return _json_response(self, {"ok": True, "package_name": package, "builds": rows})
+
     def _api_google_bundles(self):
         """Google Play 已上传的 App Bundle 版本列表（供下载面板选择版本）。
 
@@ -2351,6 +2414,8 @@ class Handler(BaseHTTPRequestHandler):
         online_time = body.get("online_time") or None
         # 华为 Harmony：版本包已在 AGC 软件包管理里，这里只携带选中的构建版本
         harmony_version = body.get("harmony_version") or None
+        # Apple：提交 TestFlight 已上传的构建（build_id + 版本号 + 构建号）
+        apple_build = body.get("apple_build") or None
         auto_review = bool(body.get("auto_review"))
         release_mode = body.get("release_mode") or "staged"
 
@@ -2389,6 +2454,7 @@ class Handler(BaseHTTPRequestHandler):
                 "release_notes": release_notes, "release_notes_l10n": release_notes_l10n, "track": track,
                 "online_time": online_time,
                 "harmony_version": harmony_version,
+                "apple_build": apple_build,
                 "auto_review": auto_review,
                 "release_mode": release_mode,
             })

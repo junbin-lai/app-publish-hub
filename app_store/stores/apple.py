@@ -68,15 +68,35 @@ class AppleAdapter(StoreAdapter):
         super().__init__(credentials)
         self._api_key = credentials.get("api_key") or {}
         self._apps_map = self.credentials.get("apps") or {}
+        # 当前请求/任务对应的包名：按应用取各自的 api_key（不同开发者账号的 p8）
+        self._active_pkg = ""
 
     def _country(self):
         return self.credentials.get("country") or "cn"
 
+    def _app_entry(self, package_name: str) -> Any:
+        return self._apps_map.get(package_name) if package_name else None
+
+    def _key_for(self, package_name: str = "") -> Dict[str, Any]:
+        """按应用取 App Store Connect 密钥；应用未单独配置时回落到顶层 api_key。
+
+        apps 支持两种写法：
+          "com.x": 1234567890                                  -> 沿用顶层 api_key
+          "com.x": {"app_id": 1234567890, "api_key": {...}}    -> 用该账号自己的 p8
+        """
+        entry = self._app_entry(package_name)
+        if isinstance(entry, dict) and isinstance(entry.get("api_key"), dict):
+            return entry["api_key"]
+        return self._api_key
+
     def _app_id(self, package_name: str = "") -> str:
         """返回 Apple 数字 App ID（如 1671595666）或 bundleId。"""
-        if package_name:
-            aid = self._apps_map.get(package_name) or ""
-            if aid: return str(aid)
+        entry = self._app_entry(package_name)
+        if isinstance(entry, dict):
+            aid = entry.get("app_id") or ""
+        else:
+            aid = entry or ""
+        if aid: return str(aid)
         aid = self.credentials.get("app_id") or ""
         if aid: return str(aid)
         if package_name:
@@ -150,7 +170,18 @@ class AppleAdapter(StoreAdapter):
         return value
 
     def query_status(self, package_name: str) -> StoreStatus:
-        r0 = self._lookup(package_name)
+        """商店状态：优先用 ASC API（能拿到审核状态），无密钥时回退网页/Lookup。"""
+        api_err = ""
+        if self._key_for(package_name):
+            try:
+                return self._query_status_api(package_name)
+            except StoreError as e:
+                api_err = str(e)
+        try:
+            r0 = self._lookup(package_name)
+        except StoreError as e:
+            # 接口和网页都失败：抛给上层，由状态卡显示「查询失败」+ 具体原因
+            raise StoreError(api_err or str(e))
         version = ""
         page_used = False
         track_url = r0.get("trackViewUrl") or ""
@@ -167,18 +198,95 @@ class AppleAdapter(StoreAdapter):
             live_version_names=[version] if version else [],
             audit_note=note,
             review_message="",
-            raw={"lookup": r0, "page_used": page_used},
+            raw={"lookup": r0, "page_used": page_used, "api_error": api_err},
+            checked_at=utcnow_iso(),
+        )
+
+    # ASC appStoreState → 统一状态归类
+    _REVIEW_STATES = ("WAITING_FOR_REVIEW", "IN_REVIEW")
+    _PENDING_STATES = ("PENDING_APPLE_RELEASE", "PENDING_DEVELOPER_RELEASE",
+                       "PROCESSING_FOR_APP_STORE")
+    _DRAFT_STATES = ("PREPARE_FOR_SUBMISSION",)
+    _REJECTED_STATES = ("REJECTED", "DEVELOPER_REJECTED", "METADATA_REJECTED")
+
+    def _query_status_api(self, package_name: str) -> StoreStatus:
+        """用 App Store Connect API 查商店版本及审核状态（不抓网页，速度快）。"""
+        self._active_pkg = package_name
+        apple_app_id = self._apple_app_id(package_name)
+        data = self._asc_request(
+            "GET",
+            f"/apps/{apple_app_id}/appStoreVersions?limit=20"
+            f"&fields[appStoreVersions]=versionString,appStoreState,createdDate,platform",
+        )
+        versions: List[Tuple[str, str, str]] = []
+        for v in data.get("data") or []:
+            at = v.get("attributes") or {}
+            if (at.get("platform") or "IOS") != "IOS":
+                continue
+            versions.append((
+                str(at.get("versionString") or ""),
+                str(at.get("appStoreState") or ""),
+                str(at.get("createdDate") or ""),
+            ))
+        if not versions:
+            raise StoreError(f"Apple 应用 {package_name}（App ID {apple_app_id}）没有商店版本记录")
+        versions.sort(key=lambda x: x[2], reverse=True)  # 新版本在前
+
+        live = [v for v, st, _ in versions if st == "READY_FOR_SALE"]
+        review = [(v, st) for v, st, _ in versions if st in self._REVIEW_STATES]
+        pending = [(v, st) for v, st, _ in versions if st in self._PENDING_STATES]
+        draft = [v for v, st, _ in versions if st in self._DRAFT_STATES]
+        rejected = [(v, st) for v, st, _ in versions if st in self._REJECTED_STATES]
+
+        if review:
+            state = AuditState.REVIEWING
+        elif pending:
+            state = AuditState.PENDING
+        elif rejected and not live:
+            state = AuditState.REJECTED
+        elif live:
+            state = AuditState.PUBLISHED
+        elif draft:
+            state = AuditState.DRAFT
+        else:
+            state = AuditState.UNKNOWN
+
+        note = ""
+        if review:
+            ver, st = review[0]
+            note = f"{ver} 等待审核" if st == "WAITING_FOR_REVIEW" else f"{ver} 审核中"
+        elif pending:
+            ver, st = pending[0]
+            note = {
+                "PENDING_APPLE_RELEASE": f"{ver} 审核通过，等待苹果发布",
+                "PENDING_DEVELOPER_RELEASE": f"{ver} 审核通过，待开发者发布",
+                "PROCESSING_FOR_APP_STORE": f"{ver} 审核通过，处理中",
+            }.get(st, "")
+        elif rejected:
+            note = f"{rejected[0][0]} 被拒绝"
+
+        return StoreStatus(
+            platform=self.platform, package_name=package_name, state=state,
+            live_version_names=live,
+            reviewing_version_names=[v for v, _ in review],
+            draft_version_names=draft,
+            audit_note=note,
+            review_message="",
+            raw={"api_versions": versions},
             checked_at=utcnow_iso(),
         )
 
     # ========== 发布（App Store Connect API，框架待测） ==========
 
     def check(self) -> List[str]:
-        """检查发布依赖。有 api_key 时校验私钥文件是否存在。"""
+        """检查发布依赖：校验顶层及各应用单独配置的 .p8 文件是否存在。"""
         problems: List[str] = []
-        key_info = self._api_key
-        if key_info:
-            p8_path = key_info.get("private_key_path") or ""
+        keys = [self._api_key] + [
+            e.get("api_key") for e in self._apps_map.values()
+            if isinstance(e, dict) and isinstance(e.get("api_key"), dict)
+        ]
+        for key_info in keys:
+            p8_path = (key_info or {}).get("private_key_path") or ""
             if p8_path and not Path(p8_path).expanduser().is_file():
                 problems.append(f"Apple API 私钥 .p8 文件不存在: {p8_path}")
         return problems
@@ -193,14 +301,17 @@ class AppleAdapter(StoreAdapter):
         """
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
         from cryptography.hazmat.backends import default_backend
 
-        issuer_id = (self._api_key or {}).get("issuer_id") or ""
-        key_id = (self._api_key or {}).get("key_id") or ""
-        p8_path = (self._api_key or {}).get("private_key_path") or ""
+        key = self._key_for(self._active_pkg)
+        issuer_id = key.get("issuer_id") or ""
+        key_id = key.get("key_id") or ""
+        p8_path = key.get("private_key_path") or ""
 
         if not issuer_id or not key_id or not p8_path:
-            raise StoreError("Apple 发布需要配置 api_key.issuer_id / key_id / private_key_path")
+            who = f"应用 {self._active_pkg} " if self._active_pkg else ""
+            raise StoreError(f"Apple {who}发布需要配置 api_key.issuer_id / key_id / private_key_path")
 
         p8_path = Path(p8_path).expanduser()
         if not p8_path.is_file():
@@ -230,9 +341,12 @@ class AppleAdapter(StoreAdapter):
         message = (header_b64 + "." + payload_b64).encode()
 
         # ES256 签名（P-256 + SHA-256）
-        signature = private_key.sign(message, ec.ECDSA(hashes.SHA256()))
-        sig_b64 = _b64(signature)
-        return f"{header_b64}.{payload_b64}.{sig_b64}"
+        # 注意：cryptography 输出的是 DER 编码，JWT ES256 要求裸 R||S（各 32 字节）。
+        # 直接 base64 DER 会被 Apple 判为 401 NOT_AUTHORIZED。
+        der_sig = private_key.sign(message, ec.ECDSA(hashes.SHA256()))
+        r, s = decode_dss_signature(der_sig)
+        raw_sig = r.to_bytes(32, "big") + s.to_bytes(32, "big")
+        return f"{header_b64}.{payload_b64}.{_b64(raw_sig)}"
 
     def _asc_request(self, method: str, path: str, body: Any = None) -> Dict[str, Any]:
         """发送 App Store Connect API 请求。
@@ -289,6 +403,46 @@ class AppleAdapter(StoreAdapter):
             path = nxt[len(_ASC_BASE):] if nxt.startswith(_ASC_BASE) else None
         return None
 
+    def list_builds(self, package_name: str) -> List[Dict[str, Any]]:
+        """TestFlight 里已上传的构建（供发布前勾选，不参与打包）。
+
+        返回 [{build_id, version_name, build_number, processing_state,
+               uploaded_date}]，按上传时间倒序，已过期构建不返回。
+        """
+        if not self._key_for(package_name):
+            raise StoreError(
+                f"Apple 应用 {package_name} 拉取构建需要配置 api_key"
+                "（issuer_id / key_id / private_key_path）"
+            )
+        self._active_pkg = package_name
+        apple_app_id = self._apple_app_id(package_name)
+        data = self._asc_request(
+            "GET",
+            f"/builds?filter[app]={apple_app_id}&sort=-uploadedDate&limit=50"
+            f"&include=preReleaseVersion",
+        )
+        # preReleaseVersion.version 才是商店版本号（4.19.1）；build.version 是构建号（219）
+        # 注意：JSON:API 的 type 是复数 "preReleaseVersions"
+        pre: Dict[str, str] = {}
+        for it in data.get("included") or []:
+            if it.get("type") == "preReleaseVersions":
+                pre[it.get("id") or ""] = (it.get("attributes") or {}).get("version") or ""
+        rows: List[Dict[str, Any]] = []
+        for b in data.get("data") or []:
+            attrs = b.get("attributes") or {}
+            if attrs.get("expired"):
+                continue
+            rel = ((b.get("relationships") or {}).get("preReleaseVersion") or {}).get("data") or {}
+            rows.append({
+                "build_id": b.get("id") or "",
+                "version_name": pre.get(rel.get("id") or "", ""),
+                "build_number": attrs.get("version") or "",
+                "processing_state": attrs.get("processingState") or "",
+                "uploaded_date": attrs.get("uploadedDate") or "",
+            })
+        rows.sort(key=lambda r: r.get("uploaded_date") or "", reverse=True)
+        return rows
+
     def publish(self, release: Release, dry_run: bool = False) -> SubmitResult:
         """提交已上传的构建版本以进行审核（App Store Connect API）。
 
@@ -300,21 +454,27 @@ class AppleAdapter(StoreAdapter):
         流程（参考 GitHub 主流实现）：
         1. 创建 App Store 版本 -> 2. 关联构建 -> 3. 填本地化信息（更新说明） -> 4. 提交审核
         """
-        if not self._api_key:
+        if not self._key_for(release.package_name):
             raise StoreError(
-                "Apple 发布需要配置 api_key（issuer_id / key_id / private_key_path）。"
+                f"Apple 应用 {release.package_name} 发布需要配置 api_key"
+                "（issuer_id / key_id / private_key_path）。"
                 "生成路径：App Store Connect → 用户和访问 → 集成 → App Store Connect API"
             )
+        self._active_pkg = release.package_name
 
         apple_app_id = self._apple_app_id(release.package_name)
-        version_str = release.version_name or ""
+        # 前端勾选的 TestFlight 构建（可选）；没有则按版本号自动匹配
+        sel = (release.metadata or {}).get("apple_build") or {}
+        sel_build_id = str(sel.get("build_id") or "")
+        version_str = str(sel.get("version_name") or "") or release.version_name or ""
         if not version_str:
             raise StoreError("Apple 发布需要提供 version_name（版本号，如 4.19.1）")
         release_notes = release.release_notes or ""
 
         if dry_run:
+            extra = f"，构建 {sel.get('build_number') or sel_build_id}" if sel_build_id else "（按版本号匹配构建）"
             return SubmitResult(self.platform, True,
-                                f"Apple: dry-run 通过（将发布 {version_str} 给 App ID {apple_app_id}）",
+                                f"Apple: dry-run 通过（将发布 {version_str} 给 App ID {apple_app_id}{extra}）",
                                 state=AuditState.DRAFT)
 
         step_cb = (release.metadata or {}).get("_step_cb")
@@ -347,8 +507,13 @@ class AppleAdapter(StoreAdapter):
             raise StoreError(f"Apple 版本创建失败（versionString: {version_str}）")
 
         # 2) 查找构建并关联到版本
-        if step_cb: step_cb("查找匹配的构建版本…")
-        build_id = self._find_build(apple_app_id, version_str)
+        if sel_build_id:
+            build_id = sel_build_id
+            if step_cb:
+                step_cb(f"使用已选构建 {sel.get('build_number') or build_id}（{build_id[:8]}…）")
+        else:
+            if step_cb: step_cb("查找匹配的构建版本…")
+            build_id = self._find_build(apple_app_id, version_str)
         if not build_id:
             raise StoreError(
                 f"Apple 未找到版本 {version_str} 的构建。请先用 Xcode / Transporter 上传构建，"

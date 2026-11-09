@@ -12,6 +12,8 @@ build/
 **/credentials.json
 **/credentials.*.json
 **/*.credentials.json
+# 苹果 App Store Connect 私钥（.p8）绝不能进仓库
+**/*.p8
 !config/example.credentials.json
 凭证/
 config/credentials.json
