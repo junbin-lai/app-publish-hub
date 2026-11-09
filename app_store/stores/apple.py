@@ -30,10 +30,13 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import os
 import re
+import ssl
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -54,6 +57,12 @@ _ASC_BASE = "https://api.appstoreconnect.apple.com/v1"
 # key=package_name, value=(expire_monotonic, version)。失败结果也缓存（短 TTL），
 # 防止网络抖动时每次都等 30s 超时。
 _PAGE_VERSION_CACHE: Dict[str, tuple] = {}
+
+# JWT 令牌缓存：(issuer_id, key_id) -> (token, exp_ts)
+# Apple 对令牌生成有频次限制，短时间内大量生成新令牌会被判 401 NOT_AUTHORIZED；
+# 官方建议复用同一个令牌（有效期 20 分钟），这里在过期前 5 分钟才重新生成。
+_TOKEN_CACHE: Dict[tuple, tuple] = {}
+_TOKEN_LOCK = threading.Lock()
 _PAGE_VERSION_TTL_SECONDS = 300
 _PAGE_VERSION_FAIL_TTL_SECONDS = 60
 
@@ -346,6 +355,14 @@ class AppleAdapter(StoreAdapter):
         if not p8_path.is_file():
             raise StoreError(f"Apple API 私钥文件不存在: {p8_path}")
 
+        # 复用未过期的令牌（Apple 限制令牌生成频次，频繁生成会返回 401）
+        now = int(time.time())
+        cache_key = (issuer_id, key_id)
+        with _TOKEN_LOCK:
+            hit = _TOKEN_CACHE.get(cache_key)
+        if hit and int(hit[1]) - 300 > now:
+            return hit[0]
+
         # 加载 .p8 私钥（PKCS#8 格式）
         p8_bytes = p8_path.read_bytes()
         private_key = serialization.load_pem_private_key(
@@ -387,10 +404,19 @@ class AppleAdapter(StoreAdapter):
             )
         except Exception as exc:
             raise StoreError(f"Apple JWT 签名自检失败（cryptography/OpenSSL 异常）: {exc}")
-        return f"{header_b64}.{payload_b64}.{_b64(raw_sig)}"
+
+        token = f"{header_b64}.{payload_b64}.{_b64(raw_sig)}"
+        with _TOKEN_LOCK:
+            _TOKEN_CACHE[cache_key] = (token, now + 1200)
+        return token
 
     def _asc_request(self, method: str, path: str, body: Any = None) -> Dict[str, Any]:
-        """发送 App Store Connect API 请求。
+        """发送 App Store Connect API 请求，401 NOT_AUTHORIZED 自动重试。
+
+        App Store Connect 的 daiquiri 网关是多实例部署，部分实例的 API Key
+        缓存同步存在延迟：同一个有效 token 连续请求会出现 401/200 交替
+        （实测连续 10 次为 3 次 401 + 7 次 200）。401 表示请求未被处理，
+        重试是安全的，且通常下一次就会落到可用实例。
 
         Args:
             method: GET / POST / PATCH
@@ -400,31 +426,65 @@ class AppleAdapter(StoreAdapter):
         Returns:
             解析后的 JSON 响应 data
         """
+        attempts = 3
+        last_error: Optional[StoreError] = None
+        for attempt in range(attempts):
+            try:
+                return self._asc_request_once(method, path, body)
+            except StoreError as exc:
+                if "HTTP 401" not in str(exc) or attempt == attempts - 1:
+                    raise
+                last_error = exc
+                if attempt == 1:
+                    # 再试前强制重签令牌，避开密钥缓存未同步的实例
+                    with _TOKEN_LOCK:
+                        _TOKEN_CACHE.clear()
+                time.sleep(0.6 * (attempt + 1))
+        raise last_error if last_error is not None else StoreError("App Store Connect API 请求失败")
+
+    def _asc_request_once(self, method: str, path: str, body: Any = None) -> Dict[str, Any]:
+        """发送一次 App Store Connect API 请求（不重试）。"""
         token = self._jwt_token()
-        url = _ASC_BASE + (path if path.startswith("/") else "/" + path)
+        if path.startswith("http://") or path.startswith("https://"):
+            url = path  # links.next 返回的是完整地址
+        else:
+            url = _ASC_BASE + (path if path.startswith("/") else "/" + path)
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": "AppPublishHub/1.0",
         }
         data_bytes = json.dumps(body, ensure_ascii=False).encode() if body else None
 
-        req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
+        # 使用 http.client 而非 urllib.request.urlopen：Windows 上 urllib 会在请求中
+        # 追加 Accept-Encoding: identity / Connection: close，被 App Store Connect 的
+        # 边缘节点判为 401 NOT_AUTHORIZED（同样的 token 用 http.client / curl 均正常）。
+        parts = urllib.parse.urlsplit(url)
+        path_q = parts.path + (("?" + parts.query) if parts.query else "")
+        conn = http.client.HTTPSConnection(parts.netloc, timeout=60, context=ssl.create_default_context())
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                raw = resp.read().decode("utf-8")
-                return json.loads(raw)
-        except urllib.error.HTTPError as e:
-            detail = ""
-            try:
-                detail = json.loads(e.read().decode())
-            except Exception:
-                pass
-            raise StoreError(
-                f"App Store Connect API {method} {path} 失败: HTTP {e.code} {detail}",
-            )
+            conn.request(method, path_q, body=data_bytes, headers=headers)
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8", "replace")
+            if resp.status >= 400:
+                try:
+                    detail: Any = json.loads(raw)
+                except Exception:
+                    detail = raw[:300]
+                raise StoreError(
+                    f"App Store Connect API {method} {path} 失败: HTTP {resp.status} {detail}",
+                )
+            return json.loads(raw) if raw else {}
+        except StoreError:
+            raise
         except Exception as e:
             raise StoreError(f"App Store Connect API 请求失败: {e}")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _get_app_store_version_id(self, apple_app_id: str, version_string: str) -> Optional[str]:
         """查找已有 App Store 版本（用于更新已有版本而非创建新版本）。
