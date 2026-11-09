@@ -58,6 +58,36 @@ _PAGE_VERSION_TTL_SECONDS = 300
 _PAGE_VERSION_FAIL_TTL_SECONDS = 60
 
 
+def _der_ecdsa_to_raw(der: bytes) -> bytes:
+    """把 DER 编码的 ECDSA 签名（SEQUENCE{INTEGER r, INTEGER s}）转成裸 R||S（各 32 字节）。
+
+    JWT ES256 要求裸 R||S，而 cryptography 的 sign() 返回 DER。
+    这里手工解析 DER 而不使用 decode_dss_signature：后者在不同
+    cryptography/OpenSSL 版本（如 Windows 上的 50.0.2）上对带前导 0x00
+    的 INTEGER 处理存在差异，会偶发产出 64 字节但无效的签名，
+    表现为 Apple 返回 401 NOT_AUTHORIZED。
+    """
+    if len(der) < 8 or der[0] != 0x30:
+        raise ValueError("ECDSA 签名不是 DER SEQUENCE")
+    idx = 1
+    first_len = der[idx]
+    if first_len & 0x80:  # 长格式长度
+        idx += 1 + (first_len & 0x7F)
+    else:
+        idx += 1
+    parts = []
+    for _ in range(2):
+        if idx + 1 >= len(der) or der[idx] != 0x02:
+            raise ValueError("ECDSA 签名不是 DER INTEGER")
+        ln = der[idx + 1]
+        val = der[idx + 2: idx + 2 + ln].lstrip(b"\x00")
+        if len(val) > 32:
+            raise ValueError("ECDSA 签名分量超过 32 字节")
+        parts.append(val.rjust(32, b"\x00"))
+        idx += 2 + ln
+    return parts[0] + parts[1]
+
+
 class AppleAdapter(StoreAdapter):
     platform = Platform.APPLE
     display_name = "Apple App Store"
@@ -301,7 +331,6 @@ class AppleAdapter(StoreAdapter):
         """
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import ec
-        from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
         from cryptography.hazmat.backends import default_backend
 
         key = self._key_for(self._active_pkg)
@@ -342,10 +371,22 @@ class AppleAdapter(StoreAdapter):
 
         # ES256 签名（P-256 + SHA-256）
         # 注意：cryptography 输出的是 DER 编码，JWT ES256 要求裸 R||S（各 32 字节）。
-        # 直接 base64 DER 会被 Apple 判为 401 NOT_AUTHORIZED。
+        # 直接 base64 DER 会被 Apple 判为 401 NOT_AUTHORIZED；
+        # 转换用 _der_ecdsa_to_raw() 手工解析，避免 decode_dss_signature 的版本差异。
         der_sig = private_key.sign(message, ec.ECDSA(hashes.SHA256()))
-        r, s = decode_dss_signature(der_sig)
-        raw_sig = r.to_bytes(32, "big") + s.to_bytes(32, "big")
+        raw_sig = _der_ecdsa_to_raw(der_sig)
+
+        # 本地自检：R||S 还原成 DER 后必须能被公钥验签通过，
+        # 避免签名转换异常时把无效 token 发出去（只会得到远端 401）。
+        from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+        try:
+            private_key.public_key().verify(
+                encode_dss_signature(int.from_bytes(raw_sig[:32], "big"),
+                                     int.from_bytes(raw_sig[32:], "big")),
+                message, ec.ECDSA(hashes.SHA256()),
+            )
+        except Exception as exc:
+            raise StoreError(f"Apple JWT 签名自检失败（cryptography/OpenSSL 异常）: {exc}")
         return f"{header_b64}.{payload_b64}.{_b64(raw_sig)}"
 
     def _asc_request(self, method: str, path: str, body: Any = None) -> Dict[str, Any]:
