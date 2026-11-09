@@ -37,8 +37,8 @@
 
 | 平台 | 查询 | 发布 | 定时上线 | 定时/手动修改立即上线 | 备注 |
 | --- | --- | --- | --- | --- | --- |
-| Google Play | ✅ 三态 | ✅ | ❌ | ❌ | 发布需 **AAB**（APK 已不被接受）；可自动送审（勾选「Google 自动送审」）或存草稿后手动送审 |
-| Apple App Store | ✅ 版本+审核状态 | ✅ 构建 | ❌ | ✅ 手动 | 查询优先 App Store Connect API（`/v1/appStoreVersions`），未配密钥时回退 iTunes Lookup；发布从 TestFlight 已上传构建里选一个（`/v1/builds` → 关联版本 → 提交审核），本机不需要 ipa；版本为「待开发者发布」时状态卡出现「立即发布」按钮；尚未真实发布实测 |
+| Google Play | ✅ | ✅ | ❌ | ❌ | 查询返回已上架 / 审核中 / 草稿三态；发布需 **AAB**（APK 已不被接受）；可自动送审（勾选「Google 自动送审」）或存草稿后手动送审 |
+| Apple App Store | ✅ | ✅ | ❌ | ✅ | 查询返回线上版本与审核状态，优先 App Store Connect API（`/v1/appStoreVersions`），未配密钥时回退 iTunes Lookup；发布从 TestFlight 已上传构建里选一个（`/v1/builds` → 关联版本 → 提交审核），本机不需要 ipa；版本为「待开发者发布」时状态卡出现「立即发布」按钮；尚未真实发布实测 |
 | 小米应用商店 | ✅ | ✅ | ✅ | ❌ | X509 公钥 RSA 加密签名 |
 | OPPO 软件商店 | ✅ | ✅ | ✅ | ❌ | 更新自动复用现有发布资料 |
 | vivo 应用商店 | ✅ | ✅ | ✅ | ❌ | 上传 APK → 同步更新 |
