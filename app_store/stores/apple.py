@@ -245,7 +245,8 @@ class AppleAdapter(StoreAdapter):
     # READY_FOR_DISTRIBUTION 是 Apple 新枚举值（替代已弃用的 READY_FOR_SALE），
     # 部分应用开始返回该值，两种都要当作"已上架"。
     _LIVE_STATES = ("READY_FOR_SALE", "READY_FOR_DISTRIBUTION")
-    _REVIEW_STATES = ("WAITING_FOR_REVIEW", "IN_REVIEW")
+    # READY_FOR_REVIEW：提交单已建好但还没真正送审（旧版本卡住时的常见状态）
+    _REVIEW_STATES = ("READY_FOR_REVIEW", "WAITING_FOR_REVIEW", "IN_REVIEW")
     _PENDING_STATES = ("PENDING_APPLE_RELEASE", "PENDING_DEVELOPER_RELEASE",
                        "PROCESSING_FOR_APP_STORE")
     _DRAFT_STATES = ("PREPARE_FOR_SUBMISSION",)
@@ -315,7 +316,12 @@ class AppleAdapter(StoreAdapter):
         note = ""
         if review:
             ver, st = review[0]
-            note = f"{ver} 等待审核" if st == "WAITING_FOR_REVIEW" else f"{ver} 审核中"
+            if st == "READY_FOR_REVIEW":
+                note = f"{ver} 待送审（提交单未提交）"
+            elif st == "WAITING_FOR_REVIEW":
+                note = f"{ver} 等待审核"
+            else:
+                note = f"{ver} 审核中"
         elif pending:
             ver, st = pending[0]
             note = {
@@ -921,46 +927,105 @@ class AppleAdapter(StoreAdapter):
             }
             self._asc_request("POST", "/appStoreVersionLocalizations", body=body)
 
-    def _submit_for_review(self, apple_app_id: str, version_id: str, version_str: str) -> None:
-        """创建审核提交（ReviewSubmission）并添加版本项目。
+    def _open_review_submission(self, apple_app_id: str) -> str:
+        """返回该 App 尚未提交的审核提交单 id（Apple 同时只允许一个）。
 
-        流程（Apple 现行方案，GitHub 主流实现参考）：
-        1. POST /v1/reviewSubmissions - 创建审核提交
-        2. POST /v1/reviewSubmissions/{id}/items - 添加 APP_STORE_VERSION 项目
+        历史上失败的发布可能留下只建单、没送审的残留提交单，
+        直接新建会触发 409，所以优先复用。
         """
-        # 创建审核提交
-        sub_body = {
-            "data": {
-                "type": "reviewSubmissions",
-                "attributes": {"platform": "IOS"},
-                "relationships": {
-                    "app": {"data": {"type": "apps", "id": apple_app_id}},
-                },
-            }
-        }
-        sub_resp = self._asc_request("POST", "/reviewSubmissions", body=sub_body)
-        sub_id = sub_resp.get("data", {}).get("id", "")
-        if not sub_id:
-            raise StoreError("Apple 审核提交创建失败")
-        time.sleep(0.3)
-
-        # 添加版本项目
-        item_body = {
-            "data": {
-                "type": "reviewSubmissionItems",
-                "relationships": {
-                    "reviewSubmission": {"data": {"type": "reviewSubmissions", "id": sub_id}},
-                    "appStoreVersion": {"data": {"type": "appStoreVersions", "id": version_id}},
-                },
-            }
-        }
         try:
-            self._asc_request("POST", "/reviewSubmissionItems", body=item_body)
-        except Exception as e:
-            # 添加审核项目失败：尝试删除已创建的 reviewSubmission，避免平台侧残留空提交
+            res = self._asc_request(
+                "GET",
+                f"/apps/{apple_app_id}/reviewSubmissions"
+                f"?filter[state]=READY_FOR_REVIEW&limit=10",
+            )
+        except StoreError:
+            return ""
+        for it in res.get("data") or []:
+            sid = it.get("id") or ""
+            if sid:
+                return sid
+        return ""
+
+    def _submission_has_version(self, sub_id: str, version_id: str) -> bool:
+        """提交单里是否已包含该版本（重复添加会 409）。"""
+        try:
+            res = self._asc_request(
+                "GET",
+                f"/reviewSubmissions/{sub_id}/items?limit=50&include=appStoreVersion",
+            )
+        except StoreError:
+            return False
+        ids = set()
+        for it in res.get("data") or []:
+            rel = ((it.get("relationships") or {}).get("appStoreVersion") or {}).get("data") or {}
+            if rel.get("id"):
+                ids.add(rel["id"])
+        if not ids:
+            # 部分情况下 items 不返回 relationship linkage，只能从 included 反推
+            for inc in res.get("included") or []:
+                if inc.get("type") == "appStoreVersions" and inc.get("id"):
+                    ids.add(inc["id"])
+        return version_id in ids
+
+    def _submit_for_review(self, apple_app_id: str, version_id: str, version_str: str) -> None:
+        """创建/复用审核提交，添加版本项目，并正式提交审核。
+
+        流程（Apple 现行方案）：
+        1. 复用或 POST /v1/reviewSubmissions 创建审核提交
+        2. POST /v1/reviewSubmissionItems 添加 APP_STORE_VERSION 项目
+        3. PATCH /v1/reviewSubmissions/{id} submitted=true  <- 缺少这步版本会一直停在
+           READY_FOR_REVIEW，Apple 侧根本收不到送审请求
+        """
+        newly_created = False
+        sub_id = self._open_review_submission(apple_app_id)
+        if not sub_id:
+            sub_body = {
+                "data": {
+                    "type": "reviewSubmissions",
+                    "attributes": {"platform": "IOS"},
+                    "relationships": {
+                        "app": {"data": {"type": "apps", "id": apple_app_id}},
+                    },
+                }
+            }
+            sub_resp = self._asc_request("POST", "/reviewSubmissions", body=sub_body)
+            sub_id = sub_resp.get("data", {}).get("id", "")
+            if not sub_id:
+                raise StoreError("Apple 审核提交创建失败")
+            newly_created = True
+            time.sleep(0.3)
+
+        # 添加版本项目（已存在则跳过，避免 409）
+        if not self._submission_has_version(sub_id, version_id):
+            item_body = {
+                "data": {
+                    "type": "reviewSubmissionItems",
+                    "relationships": {
+                        "reviewSubmission": {"data": {"type": "reviewSubmissions", "id": sub_id}},
+                        "appStoreVersion": {"data": {"type": "appStoreVersions", "id": version_id}},
+                    },
+                }
+            }
             try:
-                self._asc_request("DELETE", f"/reviewSubmissions/{sub_id}")
-            except Exception as de:
-                print(f"Apple 清理 reviewSubmission {sub_id} 失败: {de}", file=sys.stderr)
-            # 有些情况下必须先用 PATCH 设置 appStoreVersion 的 earliestReleaseDate / releaseType
-            raise StoreError(f"Apple 添加审核项目失败: {e}")
+                self._asc_request("POST", "/reviewSubmissionItems", body=item_body)
+            except Exception as e:
+                # 仅清理本次新建的空提交单，复用旧单时不能删（里面可能有已有项目）
+                if newly_created:
+                    try:
+                        self._asc_request("DELETE", f"/reviewSubmissions/{sub_id}")
+                    except Exception as de:
+                        print(f"Apple 清理 reviewSubmission {sub_id} 失败: {de}", file=sys.stderr)
+                raise StoreError(f"Apple 添加审核项目失败: {e}")
+
+        # 正式提交审核
+        self._asc_request(
+            "PATCH", f"/reviewSubmissions/{sub_id}",
+            body={
+                "data": {
+                    "type": "reviewSubmissions",
+                    "id": sub_id,
+                    "attributes": {"submitted": True},
+                }
+            },
+        )
