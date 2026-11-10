@@ -499,6 +499,10 @@ class AppleAdapter(StoreAdapter):
         （实测连续 10 次为 3 次 401 + 7 次 200）。401 表示请求未被处理，
         重试是安全的，且通常下一次就会落到可用实例。
 
+        重试 5 次（总等待约 6 秒）：实测 3 次仍偶发失败，说明连续多次命中
+        未同步实例的概率不低；期间第 2、4 次重试前主动清空令牌缓存重签，
+        让请求换一个密钥指纹再打网关。
+
         Args:
             method: GET / POST / PATCH
             path: 如 /apps/123/appStoreVersions
@@ -507,7 +511,7 @@ class AppleAdapter(StoreAdapter):
         Returns:
             解析后的 JSON 响应 data
         """
-        attempts = 3
+        attempts = 5
         last_error: Optional[StoreError] = None
         for attempt in range(attempts):
             try:
@@ -516,7 +520,7 @@ class AppleAdapter(StoreAdapter):
                 if "HTTP 401" not in str(exc) or attempt == attempts - 1:
                     raise
                 last_error = exc
-                if attempt == 1:
+                if attempt in (1, 3):
                     # 再试前强制重签令牌，避开密钥缓存未同步的实例
                     with _TOKEN_LOCK:
                         _TOKEN_CACHE.clear()
