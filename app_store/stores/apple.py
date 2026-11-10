@@ -703,7 +703,7 @@ class AppleAdapter(StoreAdapter):
 
         # 3) 填写本地化信息（至少一条）
         if step_cb: step_cb("填写版本本地化（更新说明）…")
-        self._set_version_localizations(version_id, release)
+        self._set_version_localizations(apple_app_id, version_id, release)
 
         # 4) 提交审核
         if step_cb: step_cb("创建审核提交…")
@@ -746,12 +746,79 @@ class AppleAdapter(StoreAdapter):
             return builds[0]["id"]
         return None
 
-    def _set_version_localizations(self, version_id: str, release: Release) -> None:
-        """按语言写入更新说明。
+    # 提交审核时 ASC 要求每个本地化必须带值的属性（新建版本不会自动继承）
+    _L10N_REQUIRED = ("description", "keywords", "supportUrl")
+    # 可从历史版本复制的元数据属性（whatsNew 仅用于纯同步语言，本次有文案时会被覆盖）
+    _L10N_COPYABLE = ("description", "keywords", "supportUrl", "marketingUrl",
+                      "promotionalText", "whatsNew")
+
+    def _l10n_template(self, apple_app_id: str, version_id: str) -> Dict[str, Dict[str, str]]:
+        """取历史版本（当前版本除外）的本地化作为模板，返回 locale -> {属性: 值}。
+
+        新建的 appStoreVersion 其本地化默认是空的，Apple 在提交审核时会要求
+        description / keywords / supportUrl 必须有值，因此需要从上一次发布过的
+        版本复制这些元数据。
+        """
+        try:
+            res = self._asc_request(
+                "GET", f"/apps/{apple_app_id}/appStoreVersions?limit=200"
+                       f"&fields[appStoreVersions]=createdDate,versionString")
+        except StoreError:
+            return {}
+        items = [it for it in (res.get("data") or []) if it.get("id") != version_id]
+        items.sort(key=lambda it: (it.get("attributes") or {}).get("createdDate") or "", reverse=True)
+        for it in items:
+            vid = it.get("id") or ""
+            if not vid:
+                continue
+            try:
+                locs = self._asc_request(
+                    "GET", f"/appStoreVersions/{vid}/appStoreVersionLocalizations?limit=200")
+            except StoreError:
+                continue
+            tpl: Dict[str, Dict[str, str]] = {}
+            for lo in locs.get("data") or []:
+                attrs = lo.get("attributes") or {}
+                loc = attrs.get("locale") or ""
+                if not loc:
+                    continue
+                vals = {k: (attrs.get(k) or "") for k in self._L10N_COPYABLE}
+                if any(vals.values()):
+                    tpl[loc] = vals
+            if tpl:
+                return tpl
+        return {}
+
+    @staticmethod
+    def _pick_template(tpl: Dict[str, Dict[str, str]], locale: str) -> Dict[str, str]:
+        """为某个语言选模板：优先同语言，其次中文互转，最后回退英文/任意语言。
+
+        常见情况：应用只配了 zh-Hant 和 en-US，但更新说明传的是简体。
+        此时若直接新建 zh-Hans，Apple 会因 description/keywords/supportUrl
+        为空而拒绝提交，所以用最接近的语言补齐这些必填元数据。
+        """
+        if locale in tpl:
+            return tpl[locale]
+        prefer = {"zh-Hans": ("zh-Hant",), "zh-Hant": ("zh-Hans",)}
+        for p in prefer.get(locale, ()):
+            if p in tpl:
+                return tpl[p]
+        for p in ("en-US", "zh-Hant", "zh-Hans"):
+            if p in tpl:
+                return tpl[p]
+        return next(iter(tpl.values())) if tpl else {}
+
+    def _set_version_localizations(self, apple_app_id: str, version_id: str,
+                                   release: Release) -> None:
+        """按语言写入更新说明，并补齐 Apple 要求的必填元数据。
 
         Apple 的语言码与 Google 不同：简体 zh-Hans、繁体 zh-Hant、英文 en-US；
         前端统一按 zh-CN / zh-TW / en-US 传，这里做映射。
         已存在的本地化走 PATCH，不存在才 POST（ASC 对同一 locale 重复创建会报 409）。
+
+        description / keywords / supportUrl 是该版本本地化的必填属性，新建版本
+        不会从上一版本自动继承，缺失时提交审核会报 409 ENTITY_ERROR.ATTRIBUTE.REQUIRED，
+        因此这里从历史版本复制补齐；历史版本也没有时给出明确提示。
         """
         l10n = (release.metadata or {}).get("release_notes_l10n") or {}
         base = release.release_notes or ""
@@ -768,32 +835,85 @@ class AppleAdapter(StoreAdapter):
         if not notes:
             return
 
-        existing: Dict[str, str] = {}
+        existing: Dict[str, Dict[str, Any]] = {}
         try:
             res = self._asc_request(
                 "GET", f"/appStoreVersions/{version_id}/appStoreVersionLocalizations?limit=200")
             for it in res.get("data") or []:
                 loc = (it.get("attributes") or {}).get("locale") or ""
                 if loc:
-                    existing[loc] = it.get("id") or ""
+                    existing[loc] = {"id": it.get("id") or "", "attrs": it.get("attributes") or {}}
         except StoreError:
             existing = {}
 
-        for locale, text in notes.items():
-            loc_id = existing.get(locale)
+        tpl = self._l10n_template(apple_app_id, version_id)
+
+        # 目标语言 = 本次要写更新说明的语言 + 历史版本里已有的全部语言。
+        # 历史版本可能有十几二十种语言，新建版本时这些语言不会自动出现，
+        # 需要按历史元数据逐个补建，否则商店对应语种的页面会退回主语言。
+        targets: List[str] = list(notes.keys())
+        for loc in list(tpl.keys()) + list(existing.keys()):
+            if loc not in targets:
+                targets.append(loc)
+
+        # 第一阶段：算出每个语言要写的属性，顺带收集无法补齐的必填项
+        plan: List[Tuple[str, str, Dict[str, Any]]] = []  # (locale, 现有 id, 属性)
+        missing: List[str] = []
+        for locale in targets:
+            cur = existing.get(locale)
+            src = self._pick_template(tpl, locale)
+            has_note = locale in notes
+            if cur:
+                attrs: Dict[str, Any] = {}
+                if has_note:
+                    attrs["whatsNew"] = notes[locale]
+                for k in self._L10N_REQUIRED:
+                    if not (cur["attrs"].get(k) or "").strip():
+                        if src.get(k):
+                            attrs[k] = src[k]
+                        elif has_note:
+                            # 本次要写更新说明却补不齐必填 → 提交必然 409，提前报错
+                            missing.append(f"{locale}.{k}")
+                if attrs:
+                    plan.append((locale, cur["id"] or "", attrs))
+                continue
+            # 新版本里没有该语言：用历史元数据创建
+            attrs = {"locale": locale}
+            for k in self._L10N_COPYABLE:
+                if src.get(k):
+                    attrs[k] = src[k]
+            if has_note:
+                attrs["whatsNew"] = notes[locale]
+            lack = [k for k in self._L10N_REQUIRED if not attrs.get(k)]
+            if lack:
+                if has_note:
+                    missing.extend(f"{locale}.{k}" for k in lack)
+                # 纯同步的历史语言若元数据本身不全就跳过，避免阻塞发布
+                continue
+            plan.append((locale, "", attrs))
+
+        if missing:
+            raise StoreError(
+                "Apple 本地化元数据缺失：" + "、".join(missing) +
+                "。历史版本中没有可复制的值，请先在 App Store Connect 网页端补全"
+                "版本描述、关键词、技术支持网址后再提交审核"
+            )
+
+        # 第二阶段：落库
+        for locale, loc_id, attrs in plan:
             if loc_id:
                 self._asc_request("PATCH", f"/appStoreVersionLocalizations/{loc_id}", body={
                     "data": {
                         "type": "appStoreVersionLocalizations",
                         "id": loc_id,
-                        "attributes": {"whatsNew": text},
+                        "attributes": attrs,
                     }
                 })
                 continue
             body = {
                 "data": {
                     "type": "appStoreVersionLocalizations",
-                    "attributes": {"locale": locale, "whatsNew": text},
+                    "attributes": attrs,
                     "relationships": {
                         "appStoreVersion": {"data": {"type": "appStoreVersions", "id": version_id}},
                     },
