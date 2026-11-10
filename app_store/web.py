@@ -1032,6 +1032,31 @@ def _latest_local_release(app_id: str, platform: str) -> Optional[Dict[str, Any]
     return None
 
 
+def _local_version_name_map(app_id: str, platform: str) -> Dict[int, str]:
+    """本地成功提审过的 version_code -> version_name。
+
+    小米 dev/query 只回线上版本号（onlineVersionCode），没有线上版本名，
+    用它把版本号翻成名称，分享图「已上架」行才不会只显示一串数字。
+    """
+    m: Dict[int, str] = {}
+    with _task_lock:
+        for t in _TASKS.values():
+            if t.get("dry_run") or t.get("app_id") != app_id:
+                continue
+            results = t.get("results") or []
+            if not any(isinstance(r, dict) and r.get("platform") == platform and r.get("ok")
+                       for r in results):
+                continue
+            try:
+                code = int(t.get("version_code"))
+            except (TypeError, ValueError):
+                continue
+            name = str(t.get("version_name") or "")
+            if code and name:
+                m[code] = name
+    return m
+
+
 def query_app_status(app_id: str, platform: str = "all") -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """查询某应用在各平台的状态（/api/status 与飞书机器人共用这套实现）。
 
@@ -1066,7 +1091,11 @@ def query_app_status(app_id: str, platform: str = "all") -> Tuple[List[Dict[str,
                 elif key == "xiaomi":
                     # 小米：dev/query 不返回提审版本与审核状态，用本地最近提审版本
                     # 与线上版本号比对推断「审核中」（提审版本 > 线上版本）
-                    s = adapter.query_status(package, local_release=_latest_local_release(app_id, "xiaomi"))
+                    s = adapter.query_status(
+                        package,
+                        local_release=_latest_local_release(app_id, "xiaomi"),
+                        release_map=_local_version_name_map(app_id, "xiaomi"),
+                    )
                 else:
                     s = adapter.query_status(package)
                 return {

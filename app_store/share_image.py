@@ -134,7 +134,14 @@ def _build_rows(statuses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if live:
             lines.append(("已上架", live))
         if rev:
-            lines.append(("审核中", rev))
+            # Apple 的审核细分状态（等待审核 / 待送审）比笼统的「审核中」更有信息量，
+            # 直接从备注里取词作为行标签，避免下面再重复一行同样的文字
+            label = "审核中"
+            if "待送审" in note:
+                label = "待送审"
+            elif "等待审核" in note:
+                label = "等待审核"
+            lines.append((label, rev))
         if draft:
             lines.append(("草稿", draft))
         if note and note != STATE_LABELS.get(state):

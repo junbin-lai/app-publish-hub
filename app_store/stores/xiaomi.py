@@ -281,7 +281,8 @@ class XiaomiAdapter(StoreAdapter):
         )
 
     def query_status(self, package_name: str,
-                     local_release: Optional[Dict[str, Any]] = None) -> StoreStatus:
+                     local_release: Optional[Dict[str, Any]] = None,
+                     release_map: Optional[Dict[int, str]] = None) -> StoreStatus:
         cred = self._cred_for(package_name)
         email = cred.get("email") or ""
         password = cred.get("password") or ""
@@ -330,18 +331,20 @@ class XiaomiAdapter(StoreAdapter):
         local = local_release or {}
         local_code = _as_int(local.get("version_code"))
         local_name = str(local.get("version_name") or "")
+        # 线上版本名：接口只返回 onlineVersionCode，用本地历史发布记录把 code 翻成名称，
+        # 翻不到时退回显示版本号，保证「已上架」行始终有内容
+        live_label = (release_map or {}).get(online) if online is not None else None
         if local_code is not None and online is not None and local_code > online:
             state = AuditState.REVIEWING
             reviewing_names = [local_name or str(local_code)]
-            audit_note = (f"{local_name or local_code} 审核中"
-                          f"（接口无审核状态返回，由提审版本 {local_code} > 线上版本 {online} 判断）")
+            live_names = [live_label or str(online)]
+            live_codes = [online]
         elif submitted is not None and online is not None and submitted > online:
             state = AuditState.REVIEWING
             if version:
                 reviewing_names = [str(version)]
-            audit_note = f"{version} 审核中" if version else "审核中"
-            # 接口不返回线上版本名，只有线上版本号，补进备注便于确认商店当前还是哪个版本
-            audit_note += f"（线上版本号 {online}）"
+            live_names = [live_label or str(online)]
+            live_codes = [online]
         elif version:
             state = AuditState.PUBLISHED
             live_names = [str(version)]

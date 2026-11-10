@@ -615,9 +615,9 @@ var live=(x.live_version_names&&x.live_version_names.length?x.live_version_names
 var rev=(x.reviewing_version_names||[]).join(", ");var draft=(x.draft_version_names||[]).join(", ");var note=(x.audit_note||"").trim();
 var lines=[];
 if(live)lines.push({l:"已上架",v:live});
-if(rev)lines.push({l:"审核中",v:rev});
+if(rev){var rl="审核中";if(note.indexOf("待送审")>=0)rl="待送审";else if(note.indexOf("等待审核")>=0)rl="等待审核";lines.push({l:rl,v:rev});}
 if(draft)lines.push({l:"草稿",v:draft});
-if(note&&note!==stat(x.state))lines.push({l:"",v:note});
+if(note&&note!==stat(x.state)){var nv=(note.match(/\d+(?:\.\d+)+/g)||[]);var shown=live+" "+rev+" "+draft;var dup=nv.length&&nv.every(function(v){return shown.indexOf(v)>=0});if(!dup)lines.push({l:"",v:note});}
 if(!lines.length)lines.push({l:"",v:"—"});
 return{name:nm[x.platform]||x.platform,badge:bd[x.state]||bd.unknown,lines:lines}});
 var t0="";for(var i=0;i<list.length;i++){if(list[i].checked_at){t0=list[i].checked_at;break}}
