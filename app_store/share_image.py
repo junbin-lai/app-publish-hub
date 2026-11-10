@@ -131,17 +131,17 @@ def _build_rows(statuses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         note = str(x.get("audit_note") or "").strip()
         state = str(x.get("state") or "unknown")
         lines = []
+        rev_label = "审核中"
         if live:
             lines.append(("已上架", live))
         if rev:
             # Apple 的审核细分状态（等待审核 / 待送审）比笼统的「审核中」更有信息量，
             # 直接从备注里取词作为行标签，避免下面再重复一行同样的文字
-            label = "审核中"
             if "待送审" in note:
-                label = "待送审"
+                rev_label = "待送审"
             elif "等待审核" in note:
-                label = "等待审核"
-            lines.append((label, rev))
+                rev_label = "等待审核"
+            lines.append((rev_label, rev))
         if draft:
             lines.append(("草稿", draft))
         if note and note != STATE_LABELS.get(state):
@@ -154,9 +154,13 @@ def _build_rows(statuses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 lines.append(("", note))
         if not lines:
             lines.append(("", "—"))
+        badge = BADGES.get(state, BADGES["unknown"])
+        if rev and rev_label != "审核中":
+            # 徽章跟随明细行细分状态，避免出现「审核中 4.20.0 / 等待审核 4.20.0」式的不一致
+            badge = (rev_label, BADGES["reviewing"][1], BADGES["reviewing"][2])
         rows.append({
             "name": PLATFORM_NAMES.get(x.get("platform"), str(x.get("platform"))),
-            "badge": BADGES.get(state, BADGES["unknown"]),
+            "badge": badge,
             "lines": lines,
         })
     return rows
