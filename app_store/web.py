@@ -1327,7 +1327,7 @@ _AUDIT_PATHS = {
 _AUDIT_ACTION_NAMES = {
     "/api/login": "登录", "/api/logout": "退出登录", "/api/publish": "发布应用",
     "/api/build/upload": "上传安装包", "/api/apps/update": "修改应用配置",
-    "/api/release-now": "华为立即上线", "/api/tasks/stop": "停止发布任务",
+    "/api/release-now": "立即上线/发布", "/api/tasks/stop": "停止发布任务",
     "/api/tasks/clear": "清空发布历史",
     "/api/users": "新增用户", "/api/users/update": "修改用户", "/api/users/delete": "删除用户",
 }
@@ -1425,6 +1425,12 @@ class Handler(BaseHTTPRequestHandler):
         """应用级权限校验（POST 接口用）：无权限时抛 StoreError。"""
         _require_app(_request_user(self), app_id)
 
+    def _audit(self, action: str, ok: bool, detail: str = "") -> None:
+        """handler 内记审计日志的便捷封装：自动带上当前用户/IP、截断 detail。"""
+        me = _request_user(self) or {}
+        _audit_log(action, me.get("username") or "?", _client_ip(self),
+                   ok, str(detail or "")[:300])
+
     # ---- 鉴权 ----
     def _check_auth(self, path: str, write: bool) -> Optional[Tuple[int, str]]:
         """返回 (HTTP 状态码, 原因)（None = 放行）。
@@ -1462,13 +1468,8 @@ class Handler(BaseHTTPRequestHandler):
                                user.get("username") or "?", _client_ip(self), False,
                                "viewer 只读账号尝试写操作被拒绝")
                 return (403, "role")
-            # publisher 的敏感写操作 → 记审计日志
-            # （登录/登出在各自接口里记；发布在 _api_publish 里记更细的参数；
-            #  用户管理在各 handler 内带操作明细记，并做飞书告警）
-            if path in _AUDIT_PATHS and path not in (
-                    "/api/login", "/api/logout", "/api/publish") and path not in _USER_MGMT_PATHS:
-                _audit_log(_AUDIT_ACTION_NAMES.get(path, path),
-                           user.get("username") or "?", _client_ip(self), True, "")
+            # 写操作的真实结果由各 handler 内记审计（成功/失败/原因）；
+            # 鉴权层不预记 ok=true——避免操作实际失败时审计仍显示成功
         return None
 
     def _auth_error_response(self, status: int, reason: str = "") -> None:
@@ -1942,14 +1943,20 @@ class Handler(BaseHTTPRequestHandler):
         multipart 解析基于 email 模块（cgi 已在 Python 3.13 移除）；
         需整包读入内存，因此有单文件大小上限（_UPLOAD_MAX_BYTES）。
         """
-        ftype, filename, data = _parse_multipart_upload(self)
+        try:
+            ftype, filename, data = _parse_multipart_upload(self)
+        except StoreError as e:
+            self._audit("上传安装包", False, str(e))
+            raise
 
         ext = os.path.splitext(filename)[1].lower()
         expected_ext = "." + ftype
         if ext != expected_ext:
-            raise StoreError(
+            err = StoreError(
                 f"文件类型不匹配：type={ftype} 要求 {expected_ext} 文件，收到 {ext or '无扩展名'}"
             )
+            self._audit("上传安装包", False, str(err))
+            raise err
 
         # 安全文件名：取 basename，加时间戳防重名
         safe_name = os.path.basename(filename or f"upload.{ftype}")
@@ -1961,19 +1968,33 @@ class Handler(BaseHTTPRequestHandler):
         os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.abspath(os.path.join(save_dir, save_name))
 
-        with open(save_path, "wb") as out:
-            out.write(data)
-
+        try:
+            with open(save_path, "wb") as out:
+                out.write(data)
+        except OSError as e:
+            self._audit("上传安装包", False, f"写入 {save_name} 失败: {e}")
+            raise
+        self._audit("上传安装包", True, f"{ftype} · {save_name} · {len(data) // (1024 * 1024)}MB")
         return _json_response(self, {"ok": True, "type": ftype, "path": save_path, "name": save_name})
 
     def _api_update_app(self, body: Dict[str, Any]):
         app_id = body.get("app_id") or ""
         if not app_id:
             raise StoreError("缺少 app_id")
-        self._require_app_perm(app_id)
+        try:
+            self._require_app_perm(app_id)
+        except StoreError as e:
+            self._audit("修改应用配置", False, f"应用 {app_id}：{e}")
+            raise
         fields = {k: v for k, v in body.items() if k != "app_id"}
         catalog = self._catalog()
-        catalog.update_app(app_id, fields)
+        try:
+            catalog.update_app(app_id, fields)
+        except StoreError as e:
+            self._audit("修改应用配置", False, f"应用 {app_id}：{e}")
+            raise
+        self._audit("修改应用配置", True,
+                    f"应用 {app_id} · 字段 {'/'.join(sorted(fields)) or '无'}")
         # 绑定/更换安装包时，自动回收 builds/ 下未被任何应用引用的旧包
         cleanup = None
         if "apk_build" in fields or "aab_build" in fields:
@@ -2014,7 +2035,15 @@ class Handler(BaseHTTPRequestHandler):
         if platform not in creds:
             raise StoreError(f"未配置 {platform} 凭证")
         adapter = get_adapter(platform, creds)
-        result = adapter.release_now(package)
+        # 审计记录真实执行结果（鉴权层不预记，避免操作实际失败时审计仍显示成功）
+        action = {"huawei": "华为立即上线", "google": "Google 全量发布",
+                  "apple": "Apple 立即发布"}.get(platform, "立即上线")
+        try:
+            result = adapter.release_now(package)
+        except StoreError as e:
+            self._audit(action, False, str(e))
+            raise
+        self._audit(action, True, (result or {}).get("message") or "")
         return _json_response(self, {
             "ok": True, "platform": platform, "package": package, "result": result,
         })
@@ -2321,15 +2350,20 @@ class Handler(BaseHTTPRequestHandler):
         with _task_lock:
             t = _TASKS.get(tid)
             if t is None:
+                self._audit("停止发布", False, f"任务 {tid} 不存在")
                 return _json_response(self, {"ok": False, "error": "任务不存在"}, 404)
             if not _can_app(_request_user(self), str(t.get("app_id") or "")):
-                _audit_log("停止发布", (_request_user(self) or {}).get("username") or "?",
-                           _client_ip(self), False, f"无应用 {t.get('app_id')} 权限，已拒绝停止任务 {tid}")
+                self._audit("停止发布", False,
+                            f"无应用 {t.get('app_id')} 权限，已拒绝停止任务 {tid}")
                 return _json_response(self, {"ok": False, "error": "当前账号没有该应用的权限"}, 403)
             if t.get("status") != "running":
+                self._audit("停止发布", False,
+                            f"任务 {tid}（{t.get('app_id') or '?'}）已结束，无需停止")
                 return _json_response(self, {"ok": False, "error": "任务已结束，无需停止"}, 400)
             t["kill_req"] = True
             t["stage"] = "正在停止…"
+        self._audit("停止发布", True,
+                    f"任务 {tid}（{t.get('app_id') or '?'} v{t.get('version_name') or '?'}）")
         _step(tid, "收到停止请求，正在中断各平台上传…")
         return _json_response(self, {"ok": True})
 
@@ -2345,14 +2379,15 @@ class Handler(BaseHTTPRequestHandler):
         """
         # 第一道闸：必须显式确认（{"confirm": true}），防止随手调用误清历史
         if not (isinstance(body, dict) and body.get("confirm")):
-            raise StoreError(
+            err = StoreError(
                 "清空发布历史需要显式确认：请求体传 {\"confirm\": true}；"
                 "执行前会自动备份到 config/tasks_history.json.bak-<时间戳>")
+            self._audit("清空发布历史", False, "缺少显式确认参数，已拒绝")
+            raise err
         # 第二道闸：清空是全库操作，只允许 owner（publisher 只限授权应用，无法只清部分）
         me = _request_user(self) or {}
         if me.get("role") != "owner":
-            _audit_log("清空发布历史", me.get("username") or "?", _client_ip(self), False,
-                       "非 owner 尝试清空发布历史，已拒绝")
+            self._audit("清空发布历史", False, "非 owner 尝试清空发布历史，已拒绝")
             _security_alert("越权清空历史", me.get("username") or "?", _client_ip(self),
                             "非 owner 尝试清空发布历史", ok=False)
             raise StoreError("仅 owner 账号可清空发布历史")
@@ -2386,6 +2421,7 @@ class Handler(BaseHTTPRequestHandler):
                 if k not in keep:
                     _TASKS.pop(k, None)
                     _PENDING_PATHS.pop(k, None)
+        self._audit("清空发布历史", True, "已清空（执行前自动备份）")
         return _json_response(self, {"ok": True, "cleared": True})
 
     def _api_publish(self, body: Dict[str, Any]):
@@ -2404,16 +2440,12 @@ class Handler(BaseHTTPRequestHandler):
             _security_alert("发布越权尝试", _pub_user, _client_ip(self),
                             f"尝试发布未授权应用 {app_id}", ok=False)
             raise StoreError(f"当前账号没有应用 {app_id} 的发布权限，请联系 owner 授权")
-        # 审计日志先记（应用校验失败也能留下"谁在什么时候试图发布什么"）
-        try:
-            _audit_log("发布应用", _pub_user, _client_ip(self), True,
-                       f"应用 {app_id} · 平台 {platform} · v{version_name or '?'}"
-                       + (" · dry-run 仅校验" if dry_run else ""))
-        except Exception:
-            pass
+        # 审计真实结果：同步校验全部通过后在创建任务前记成功；
+        # 各校验被拒时先记失败原因再抛出，避免审计显示成功但实际未创建任务
         # 仅查询应用不允许发布
         app = self._catalog().get_app(app_id)
         if app.get("query_only"):
+            self._audit("发布应用", False, f"应用 {app_id} 标记为仅查询，已拒绝")
             raise StoreError("应用 {id} 标记为仅查询（query_only），不支持发布操作".format(id=app_id))
         # 同一应用不允许并发发布（不同应用互不影响）：双开页面/手快连点会重复向
         # 各平台提交同一版本，必须在任务创建前拦下
@@ -2427,6 +2459,9 @@ class Handler(BaseHTTPRequestHandler):
                       f"已有任务 tid={dup[0].get('id') or '?'} v{dup[0].get('version_name') or '?'} "
                       f"发起者={dup[0].get('user') or '?'} 起始={started}；"
                       f"当前全部运行中任务 {len(all_running)} 个（{', '.join((v.get('app_id') or '?') for v in all_running)}）")
+                self._audit("发布应用", False,
+                            f"应用 {app_id} 已有发布任务进行中（{started} 起，操作者 "
+                            f"{dup[0].get('user') or '?'}），已拒绝重复发布")
                 raise StoreError(
                     "应用 {id} 已有发布任务进行中（{started} 起，操作者 {user}），"
                     "请等它结束或先停止，再发起新的发布".format(
@@ -2457,14 +2492,22 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 meta = parse_build(p)
             except StoreError as e:
+                self._audit("发布应用", False, f"应用 {app_id}：{label} 解析失败（{e}）")
                 raise StoreError(f"{label} 解析失败: {e}")
             real = meta.get("package_name") or ""
             expected = app.get("package_name") or ""
             if expected and real and real != expected:
+                self._audit("发布应用", False,
+                            f"应用 {app_id}：{label} 包名不符（{real} ≠ {expected}），已拒绝")
                 raise StoreError(
                     f"安装包包名与当前应用不一致！{label} 内包名={real}，"
                     f"应用 {app_id} 配置包名={expected}。请选择正确的安装包"
                 )
+
+        # 全部同步校验通过，记成功审计（异步执行结果由发布历史/飞书通知另行展示）
+        _audit_log("发布应用", _pub_user, _client_ip(self), True,
+                   f"应用 {app_id} · 平台 {platform} · v{version_name or '?'}"
+                   + (" · dry-run 仅校验" if dry_run else ""))
 
         # 创建异步任务（记录操作者，供发布历史与飞书通知展示）
         user = _request_user(self) or {}
