@@ -351,7 +351,11 @@ h+='<div class=card><h3>发布</h3>'+
 '<div class="card"><h3>平台状态</h3>'+
 '<div><label>查询平台（可多选）</label><div id="spp" style="display:flex;flex-wrap:wrap;gap:var(--space-2)">'+statusPlatsHTML()+'</div></div>'+
 '<div class="row-between" style="margin-top:var(--space-2)"><span><button type="button" class="sm secondary" onclick="statusPlatAll(1)">全选</button> <button type="button" class="sm secondary" onclick="statusPlatAll(0)">清空</button></span><button onclick="ds()">查询状态</button></div></div>'+
-'<div class=card><h3>下载</h3>'+
+'<div class=card><h3>通知</h3>'+
+'<div><label for="pnc">发布通知群（应用专属）</label><div class=input-row><input id="pnc" value="'+esc(a.notify_chat_id||"")+'" placeholder="oc_ 开头的飞书群会话 ID，留空则只通知全局群" '+(admin?'':'disabled')+'>'
++(admin?'<button type=button class=sm onclick="saveNotifyChat()">保存</button>':'')+'</div>'
++'<div class=muted style="font-size:var(--font-caption);margin-top:var(--space-1)">发布结束会同时通知全局群（已配置时）和此专属群；留空则只通知全局群。会话 ID 可在目标群里 @机器人 发送「群号」获取</div></div></div>'+
+'<div class="card"><h3>下载</h3>'+
 '<div class="section-head"><span class="eyebrow">Google Play</span><button class="sm secondary" onclick="showBundleModal()">选择版本…</button></div>'+
 '<div id=gsel><span class=muted>未选择版本</span></div></div></div>';
 $("appc").innerHTML=h;
@@ -449,6 +453,12 @@ var rows=document.querySelectorAll('#appc .card .row');rows.forEach(function(ro)
 }})
 })}
 // AAB/APK 版本一致性提示：只提示、不拦截（有时 Google 与国内平台确实用不同包）
+// 保存应用专属通知群（留空=清除，回退全局通知群）
+function saveNotifyChat(){var a=ST.cur;if(!a)return;var el=$("pnc");if(!el)return;
+var v=(el.value||"").trim();if(v&&!/^oc_[A-Za-z0-9]+$/.test(v)){toast("会话 ID 应为 oc_ 开头（在群里 @机器人 发送「群号」获取）","err");return}
+api("/api/apps/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({app_id:a.id,notify_chat_id:v})}).then(function(r){
+if(!r||!r.ok){toast("保存失败："+((r&&r.error)||"未知错误"),"err");return}
+ST.cur.notify_chat_id=v;toast(v?"已保存：该应用发布后全局群和专属群都会通知":"已清除：该应用发布后只通知全局群")})}
 function metaRec(type,r){if(!ST.META)ST.META={};
 ST.META[type]={vn:(r&&r.version_name)||"",vc:(r&&r.version_code==null?"":r.version_code)};renderVerAlert()}
 function renderVerAlert(){var el=$("pverAlert");if(!el)return;var m=ST.META||{},A=m.aab,P=m.apk;

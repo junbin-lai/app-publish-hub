@@ -2585,6 +2585,7 @@ def run_server(
         apps=lambda: get_catalog(catalog_path).all_apps(),
         board_url=board_url,
         log=lambda msg: _dlog("飞书", msg),
+        get_app=lambda app_id: get_catalog(catalog_path).get_app(app_id),
     )
 
     _load_history()

@@ -72,14 +72,21 @@ PLATFORM_NAMES = {
 
 
 def configure(board_config_path: str, query_status: Callable, icon: Callable,
-              apps: Callable, board_url: str, log: Optional[Callable] = None) -> None:
-    """由 web.run_server 注入运行环境（在启动时调用一次）。"""
+              apps: Callable, board_url: str, log: Optional[Callable] = None,
+              get_app: Optional[Callable] = None) -> None:
+    """由 web.run_server 注入运行环境（在启动时调用一次）。
+
+    get_app: app_id → 应用 dict（含 notify_chat_id），供发布通知
+    解析应用专属通知群；不注入时回退全局通知群。
+    """
     _ENV["board_config_path"] = board_config_path
     _ENV["query_status"] = query_status
     _ENV["icon"] = icon
     _ENV["apps"] = apps
     _ENV["board_url"] = board_url or "http://127.0.0.1:8090/"
     _ENV["log"] = log
+    if get_app is not None:
+        _ENV["get_app"] = get_app
 
 
 def state() -> Dict[str, Any]:
@@ -522,6 +529,12 @@ def handle_command_text(
             _say("❌ 写入配置失败。")
         return
 
+    if cmd in ("群号", "查群号", "会话id", "会话ID"):
+        # 回复当前会话的 chat_id：用于在应用配置里填「应用专属通知群」
+        _say(f"本会话的 chat_id：{chat_id}\n"
+             "（可在 App发布中枢 → 应用详情 → 通知 里填入，该应用发布后就通知到本群）")
+        return
+
     if cmd in ("绑定安全告警", "绑定告警"):
         # 安全告警含操作人/IP/账号明细，只允许绑定私聊会话，拒绝在群里绑定
         if chat_type and chat_type != "p2p":
@@ -922,7 +935,22 @@ def notify_publish_finished(task: Dict[str, Any], app_name: str) -> str:
     """
     path = _ENV["board_config_path"]
     fs = board_config.feishu_config(path)
-    chat_id = fs.get("notify_chat_id") or ""
+    # 目标群（可多个，去重）：全局通知群（board.json feishu.notify_chat_id）
+    # + 应用专属群（catalog.json 应用级 notify_chat_id）。
+    # 全局群所有应用都通知；专属群只通知对应应用；两者都未配置才不发。
+    chat_ids = []
+    global_chat = str(fs.get("notify_chat_id") or "")
+    if global_chat:
+        chat_ids.append(global_chat)
+    app_chat = ""
+    app_lookup = _ENV.get("get_app")
+    if app_lookup:
+        try:
+            app_chat = str((app_lookup(task.get("app_id") or "") or {}).get("notify_chat_id") or "")
+        except Exception:
+            app_chat = ""
+    if app_chat and app_chat not in chat_ids:
+        chat_ids.append(app_chat)
     app_id_key, app_secret = fs.get("app_id", ""), fs.get("app_secret", "")
     if not (app_id_key and app_secret):
         return "skip:no_credentials"
@@ -931,8 +959,8 @@ def notify_publish_finished(task: Dict[str, Any], app_name: str) -> str:
         return "skip:no_lark"
     if fs.get("notify_on_publish") is False:
         return "skip:disabled"
-    if not chat_id:
-        _log("跳过飞书通知：未绑定通知群（群里 @机器人 发送「绑定通知群」）")
+    if not chat_ids:
+        _log("跳过飞书通知：未绑定通知群（群里 @机器人 发送「绑定通知群」，或在应用配置里填专属群 chat_id）")
         return "skip:no_chat"
     if task.get("dry_run"):
         return "skip:dry_run"
@@ -967,9 +995,18 @@ def notify_publish_finished(task: Dict[str, Any], app_name: str) -> str:
             except Exception as e:
                 _log(f"通知分享图生成失败（不影响卡片发送）: {e}")
         card = build_publish_card(task, app_name, image_key)
-        send_message(app_id_key, app_secret, chat_id, "interactive", json.dumps(card, ensure_ascii=False))
-        _log(f"已发送发布通知到群 {chat_id}")
-        return "sent"
+        card_json = json.dumps(card, ensure_ascii=False)
+        sent, failed = [], []
+        for cid in chat_ids:
+            try:
+                send_message(app_id_key, app_secret, cid, "interactive", card_json)
+                sent.append(cid)
+                _log(f"已发送发布通知到群 {cid}")
+            except Exception as e:
+                failed.append(cid)
+                _log(f"发布通知发送失败（群 {cid}）: {e}")
+        # 只要有一个群发成功就算 sent；全部失败才算 failed
+        return "sent" if sent else "failed"
     except Exception as e:
         _log(f"飞书通知发送失败: {e}")
         return "failed"
