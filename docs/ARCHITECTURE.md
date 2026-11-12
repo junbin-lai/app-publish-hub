@@ -11,7 +11,7 @@ Registry (registry.py) -- 按平台名惰性加载适配器
      +-- StoreAdapter (base.py) -- 抽象基类
          |
          +-- GoogleAdapter (stores/google.py)  ready  (publish+query)
-         +-- AppleAdapter  (stores/apple.py)   ready  (query: ASC API + 网页回退；publish: 构建选择，待实测)
+         +-- AppleAdapter  (stores/apple.py)   ready  (query: ASC API + 网页回退；publish: 构建选择)
          +-- XiaomiAdapter (stores/xiaomi.py)  ready  (publish+query+定时)
          +-- OPPOAdapter   (stores/oppo.py)    ready  (publish+query+定时)
          +-- VivoAdapter   (stores/vivo.py)    ready  (publish+query+定时)

@@ -375,10 +375,10 @@ Harmony 的正式包由开发同学先上传到 AGC「软件包管理」，App�
 - 「苹果 App Store 信息」点「拉取构建」→ 调 `GET /v1/builds?filter[app]=<ID>`，列出 `版本号 (构建号)`，非 VALID 会标注状态
 - 勾选 App Store 平台并选构建后，版本号自动取自该构建；**勾了 App Store 但不选构建会直接拦下**，下拉首项「不提交 Apple」= 本次跳过苹果
   （仅直接调 `/api/publish` 不传 `apple_build` 时，后端才会按 `version_name` 自动匹配构建）
-- 提交时：创建/复用 `appStoreVersions` → 关联所选 build → 写入三语言更新说明 → `reviewSubmissions` 提交审核
+- 提交时：创建/复用 `appStoreVersions` → 关联所选 build → 写入三语言更新说明 → `reviewSubmissions` 提交审核（`PATCH submitted=true` 真正进入审核队列）；本地化必填字段自动从最近历史版本继承（跨语言兜底）
 - 「全部平台」不含 Apple，需要显式勾选 App Store
 - 状态查询：配置密钥后走 `GET /v1/apps/{数字ID}/appStoreVersions`，返回版本与审核状态
-  （`等待审核` / `审核中` / `审核通过，待发布` / `被拒绝`），在状态卡与分享图中和华为/Google 等平台同款展示；
+  （`待送审` / `等待审核` / `审核中` / `审核通过，待发布` / `被拒绝`），在状态卡与分享图中和华为/Google 等平台同款展示；
   未配密钥时回退 iTunes Lookup + 页面解析，只能显示线上版本
 
 ### 多应用并行发布
