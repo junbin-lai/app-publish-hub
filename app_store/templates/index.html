@@ -511,7 +511,7 @@ lg("== "+(body.dry_run?"Dry-run":"正式")+"发布 "+(a.name||a.id)+" ==");api("
 function renderTask(t){ST.LASTT=t;
 var stopBtn=$("tstop");if(stopBtn)stopBtn.style.display=((t.status==="running")&&isAdmin())?"":"none";
 var a=(ST.apps||[]).find(function(z){return z.id===t.app_id})||{};
-$("tinfo").innerHTML=esc(a.name||t.app_id)+" → "+esc(t.platform)+(t.version_name?" v"+esc(t.version_name):"")+(t.dry_run?" "+iconSvg("bolt")+"dry-run":"");
+var _vl=t.version_label||(t.version_name||"");$("tinfo").innerHTML=esc(a.name||t.app_id)+" → "+esc(t.platform)+(_vl?" "+esc(_vl):"")+(t.dry_run?" "+iconSvg("bolt")+"dry-run":"");
 // === 平台芯片：点击切换查看对应平台详情（选中加阴影边框）；✓完成/✗失败/⚡进行中 ===
 var doneMap={},errMap={};(t.results||[]).forEach(function(v){doneMap[v.platform]=v});
 (t.errors||[]).forEach(function(v){errMap[v.platform]=v});
@@ -673,7 +673,7 @@ try{cv.toBlob(function(blob){
 if(blob&&navigator.clipboard&&navigator.clipboard.write&&window.ClipboardItem){
 navigator.clipboard.write([new ClipboardItem({"image/png":blob})]).then(okToast,fb)}else fb()},"image/png")}catch(e){fb()}
 lg("已生成分享图片（"+rows.length+" 个平台）","ok")}
-function historyRecordVersion(t){if(t.version_name)return t.version_name;var m=((t.steps||[]).join(" ").match(/ v(\d+(?:\.\d+)+)/));return m?m[1]:""}
+function historyRecordVersion(t){if(t.version_label)return t.version_label;if(t.version_name)return t.version_name;var m=((t.steps||[]).join(" ").match(/ v(\d+(?:\.\d+)+)/));return m?m[1]:""}
 var PLATFORM_NAMES={huawei:"华为",oppo:"OPPO",vivo:"VIVO",xiaomi:"小米",honor:"荣耀",google:"Google Play",apple:"Apple",qq:"应用宝"}
 // ==== 发布历史：按当前选中应用过滤（弹窗里可切「全部应用」） ====
 function appName(id){var a=(ST.apps||[]).find(function(x){return x.id===id});return (a&&a.name)||id}
@@ -682,7 +682,7 @@ function historyRowsHTML(hist){var h="";(hist||[]).forEach(function(t){var isOk=
 // 手动停止的任务：同时列出已完成平台（绿色）——停止前已完成的平台是真的完成了（真实发布会已提交到商店），
 // 只列未完成会让人误以为全部都没跑
 var okPlats=(t.results||[]).filter(function(v){return v.ok}).map(function(v){return v.platform}).filter(function(p,i,a){return p&&a.indexOf(p)===i});
-var doneLine=(t.status==="killed"&&okPlats.length)?'<div style="font-size:var(--font-label);color:var(--ok);margin-top:var(--space-1)">已完成平台：'+esc(okPlats.map(function(p){return PLATFORM_NAMES[p]||p}).join("、"))+'</div>':"";h+='<div class="card dense"><div class="row-between"><span style="font-size:var(--font-caption)">'+esc(t.finished_at||"")+' · <b>'+esc(t.app_id)+'</b> → '+esc(t.platform||"")+(v?" v"+esc(v):"")+dn+'</span><span class="state '+st+'">'+(t.status==="killed"?"已停止":(isOk?"完成":"失败"))+'</span></div><div style="font-size:var(--font-label);color:var(--mut);margin-top:var(--space-1)">'+esc(t.stage||"")+'</div>'+doneLine+failLine+"</div>"});return h}
+var doneLine=(t.status==="killed"&&okPlats.length)?'<div style="font-size:var(--font-label);color:var(--ok);margin-top:var(--space-1)">已完成平台：'+esc(okPlats.map(function(p){return PLATFORM_NAMES[p]||p}).join("、"))+'</div>':"";h+='<div class="card dense"><div class="row-between"><span style="font-size:var(--font-caption)">'+esc(t.finished_at||"")+' · <b>'+esc(t.app_id)+'</b> → '+esc(t.platform||"")+(v?" "+esc(v):"")+dn+'</span><span class="state '+st+'">'+(t.status==="killed"?"已停止":(isOk?"完成":"失败"))+'</span></div><div style="font-size:var(--font-label);color:var(--mut);margin-top:var(--space-1)">'+esc(t.stage||"")+'</div>'+doneLine+failLine+"</div>"});return h}
 function renderHistory(hist){var e=document.getElementById("sh");var t=$("histTitle");if(t)t.textContent=ST.cur?("发布历史 · "+(ST.cur.name||ST.cur.id)):"发布历史";var more=document.getElementById("histMoreBtn");if(more)more.style.display=(appHistory().length>5)?"":"none";if(!e)return;if(!hist||!hist.length){e.innerHTML='<div class=muted>暂无发布记录</div>';return}e.innerHTML=historyRowsHTML(hist)}
 function showHistoryModal(){ST.HISTPAGE=1;ST.HISTALL=false;renderHistoryModal()}
 function renderHistoryModal(){var hist=ST.HISTALL?(ST.HIST||[]):appHistory();var per=10;var total=Math.max(1,Math.ceil(hist.length/per));var pg=Math.min(Math.max(1,ST.HISTPAGE||1),total);ST.HISTPAGE=pg;var rows=hist.slice((pg-1)*per,pg*per);

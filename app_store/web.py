@@ -134,7 +134,7 @@ def _play_store_icon(package_name: str) -> tuple:
     return _http_get_bytes(m.group(0))
 
 
-_BUILDS_GRACE_SECS = 24 * 3600  # 刚上传尚未绑定的文件保护期
+_BUILDS_GRACE_SECS = 15 * 60  # 刚上传尚未绑定的文件保护期（上传后前端数秒内即绑定，15 分钟足够兜住并发/慢操作）
 
 
 def _builds_root() -> str:
@@ -716,6 +716,21 @@ def _publish_worker(tid: str):
         _step(tid, f"包名: {release.package_name} v{release.version_name or '?'}")
         if release.version_name:
             _update(tid, version_name=release.version_name)  # 实际发布的版本号（含 catalog 回落）
+        # 版本标签：按任务实际发布内容组合（安卓 / 鸿蒙 / iOS，版本号不带 v 前缀），随任务持久化，
+        # 供飞书通知标题、电子表格与前端历史展示。只发鸿蒙/苹果时不再显示残留的安卓 version_name。
+        # 安卓段以「是否携带了安卓安装包」为准：只发鸿蒙的华为任务没有 APK/AAB，不能显示安卓版本号
+        _segs: List[str] = []
+        if (apk_p or aab_p) and release.version_name:
+            _segs.append(str(release.version_name))
+        _hv = params.get("harmony_version")
+        _hv_name = str(_hv.get("version_name") or "") if isinstance(_hv, dict) else ""
+        if _hv_name and "huawei" in targets:
+            _segs.append(f"鸿蒙 {_hv_name}")
+        _ab = params.get("apple_build")
+        _ab_name = str(_ab.get("version_name") or "") if isinstance(_ab, dict) else ""
+        if _ab_name and "apple" in targets:
+            _segs.append(f"iOS {_ab_name}")
+        _update(tid, version_label=" + ".join(_segs))
         _update(tid, progress=8, stage="读取配置")
         # 并行发布：每个平台一个线程同时执行各自的发布流程，互不阻塞
         with _task_lock:
@@ -1975,6 +1990,16 @@ class Handler(BaseHTTPRequestHandler):
             self._audit("上传安装包", False, f"写入 {save_name} 失败: {e}")
             raise
         self._audit("上传安装包", True, f"{ftype} · {save_name} · {len(data) // (1024 * 1024)}MB")
+        # 每次上传后清理 builds/ 下不再被任何应用引用的旧包（同版本重复上传也不例外），
+        # 防止大文件无限堆积；保护期内（刚上传未绑定）与仍被引用（含发布任务在用）的文件不删。
+        # 前端上传后随即绑定新包（apps/update），届时上一版旧包转为未引用，同样在此被回收。
+        try:
+            cleanup = _cleanup_unreferenced_builds(self._catalog())
+        except Exception:
+            cleanup = None
+        if cleanup and cleanup.get("removed"):
+            self._audit("清理旧安装包", True,
+                        f"删除 {len(cleanup['removed'])} 个文件，释放 {cleanup['freed'] // (1024 * 1024)}MB")
         return _json_response(self, {"ok": True, "type": ftype, "path": save_path, "name": save_name})
 
     def _api_update_app(self, body: Dict[str, Any]):

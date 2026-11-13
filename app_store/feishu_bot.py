@@ -231,7 +231,9 @@ def _show_board_button() -> bool:
 def build_publish_card(task: Dict[str, Any], app_name: str, image_key: str = "") -> Dict[str, Any]:
     """发布结束通知卡片（interactive card JSON）。"""
     status = task.get("status")
-    version = task.get("version_name") or ""
+    # 组合版本标签（安卓 v… + 鸿蒙 v… + iOS v…，按实际发布内容拼装）；
+    # 旧历史记录没有该字段，回落到安卓版本号
+    version = task.get("version_label") or task.get("version_name") or ""
     results = task.get("results") or []
     errors = task.get("errors") or []
     ok_plats = [PLATFORM_NAMES.get(r.get("platform"), r.get("platform")) for r in results if r.get("ok")]
@@ -248,7 +250,9 @@ def build_publish_card(task: Dict[str, Any], app_name: str, image_key: str = "")
     else:
         template, icon, word = "red", "❌", "发布失败"
 
-    title = f"{icon} {word} · {app_name}" + (f" v{version}" if version else "")
+    # version_label 按实际发布内容组合且不带 v 前缀（如「6.22.0 + 鸿蒙 2.2.1」），直接拼接；
+    # 旧记录回落裸 version_name
+    title = f"{icon} {word} · {app_name}" + (f" {version}" if version else "")
     # 有失败时明确标注「成功平台」，避免只看到失败明细、不知道哪些平台已经提交成功
     if bad:
         plat_label = f"**成功平台（{len(ok_plats)}）**"
@@ -1202,9 +1206,11 @@ def _publish_values(task: Dict[str, Any], app_name: str) -> Dict[str, str]:
     bad = list(errors)
     bad += [{"platform": r.get("platform"), "message": r.get("message") or "未成功"}
             for r in results if not r.get("ok")]
-    vname = str(task.get("version_name") or "")
+    vname = str(task.get("version_label") or task.get("version_name") or "")
     vcode = task.get("version_code")
-    version = f"{vname} ({vcode})" if vname and vcode else (vname or str(vcode or ""))
+    # 版本号括号里带 code：仅当标签就是纯安卓版本（历史旧行为）；
+    # 组合标签（含鸿蒙/iOS）时不再拼 version_code，避免只发鸿蒙却显示残留的安卓 code
+    version = f"{vname} ({vcode})" if (vname == str(task.get("version_name") or "") and vname and vcode) else (vname or str(vcode or ""))
     return {
         "应用": app_name,
         "版本": version,
@@ -1253,7 +1259,7 @@ def sheet_add_record(task: Dict[str, Any], app_id: str, app_name: str) -> str:
                 rows.append(_SHEET_HEADER)
             rows.append(_sheet_row(task, app_name))
             _sheet_append(fs, token, sheet_id, rows)
-            _log(f"发布历史已写入电子表格（{app_name} v{task.get('version_name') or '?'}）")
+            _log(f"发布历史已写入电子表格（{app_name} {task.get('version_label') or task.get('version_name') or '?'}）")
             return "sent"
         except requests.RequestException as e:
             if attempt < 2:
