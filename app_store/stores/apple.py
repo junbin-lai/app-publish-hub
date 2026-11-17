@@ -715,7 +715,11 @@ class AppleAdapter(StoreAdapter):
         if step_cb: step_cb("填写版本本地化（更新说明）…")
         self._set_version_localizations(apple_app_id, version_id, release)
 
-        # 4) 提交审核
+        # 4) 补齐年龄分级必填项（Apple 新增的分级问题如 socialMedia 缺值会导致提审 409）
+        if step_cb: step_cb("检查年龄分级（Age Rating）…")
+        self._ensure_age_rating(version_id, step_cb)
+
+        # 5) 提交审核
         if step_cb: step_cb("创建审核提交…")
         self._submit_for_review(apple_app_id, version_id, version_str)
 
@@ -729,6 +733,44 @@ class AppleAdapter(StoreAdapter):
         )
 
     # ---- ASC API 辅助方法 ----
+
+    # 年龄分级声明里所有布尔型分级问题：缺失（None）的一律补 False。
+    # Apple 会不定期新增必填问题（如 2026 年新增的 socialMedia），老 App 新建
+    # 版本时这些字段为空，提审时报 409 ENTITY_STATE_INVALID + REQUIRED
+    _AGE_RATING_BOOL_FIELDS = (
+        "socialMedia", "gambling", "gamblingReal", "gamblingSimulated",
+        "contests", "alcohol", "sexualContent", "realitySports",
+    )
+
+    def _ensure_age_rating(self, version_id: str, step_cb=None) -> None:
+        """提审前检查版本的年龄分级声明，补齐缺失的必填布尔项。
+
+        GET /appStoreVersions/{id}/ageRatingDeclaration 读取当前声明，
+        对值为 None 的分级问题统一 PATCH False（智能家居等无此类内容的
+        App 全 False 即 4+ 分级；有特殊内容的 App 应在 ASC 网页上配置，
+        已有值不会被覆盖）。读取失败时静默跳过，交给提审报错兜底。
+        """
+        try:
+            resp = self._asc_request(
+                "GET", f"/appStoreVersions/{version_id}/ageRatingDeclaration")
+        except StoreError as e:
+            if step_cb: step_cb(f"年龄分级读取失败（跳过，提审时如有问题会再报）: {e}")
+            return
+        decl = (resp or {}).get("data") or {}
+        decl_id = decl.get("id") or ""
+        attrs = decl.get("attributes") or {}
+        if not decl_id:
+            if step_cb: step_cb("未找到年龄分级声明（跳过）")
+            return
+        missing = {f: False for f in self._AGE_RATING_BOOL_FIELDS if attrs.get(f) is None}
+        if not missing:
+            if step_cb: step_cb("年龄分级已完整，无需修改")
+            return
+        body = {"data": {"type": "ageRatingDeclarations", "id": decl_id,
+                         "attributes": missing}}
+        self._asc_request("PATCH", f"/ageRatingDeclarations/{decl_id}", body=body)
+        if step_cb:
+            step_cb(f"年龄分级已补齐 {len(missing)} 项：{', '.join(missing)} = 否")
 
     def _find_build(self, apple_app_id: str, version_str: str) -> Optional[str]:
         """按版本号查找匹配的构建。
