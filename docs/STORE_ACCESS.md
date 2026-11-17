@@ -22,7 +22,7 @@
 | 认证 | App Store Connect API：ES256 JWT（issuer_id + key_id + .p8），令牌有效期 20 分钟 |
 | 凭证 | `apple.apps`：包名 → 数字 App ID（可选带该应用专属 `api_key`）；顶层 `apple.api_key` 为默认密钥，应用分属多个开发者账号时必须逐应用配置 |
 | 拉构建 | ✅ `GET /v1/builds?filter[app]=<数字ID>&sort=-uploadedDate&include=preReleaseVersion`（返回商店版本号 + 构建号 + processingState） |
-| 发布 | ✅ 选 TestFlight 已上传构建 → 创建 `appStoreVersions` → PATCH build 关联 → 写本地化更新说明 → 补齐年龄分级缺失项 → `reviewSubmissions` 提交审核（`PATCH submitted=true` 真正送审）；本地化必填字段（描述/关键词/支持网址）自动从最近历史版本继承，目标语言缺失时按「同语言 → 简繁互转 → en-US → 任意可用语言」兜底；年龄分级（ageRatingDeclarations）缺失的必填问题（如 Apple 新增的 `socialMedia`）提审前自动补否，避免 409 `ENTITY_STATE_INVALID`，已有值不覆盖 |
+| 发布 | ✅ 选 TestFlight 已上传构建 → 创建 `appStoreVersions` → PATCH build 关联 → 写本地化更新说明 → 补齐年龄分级缺失项 → `reviewSubmissions` 提交审核（`PATCH submitted=true` 真正送审）；本地化必填字段（描述/关键词/支持网址）自动从最近历史版本继承，目标语言缺失时按「同语言 → 简繁互转 → en-US → 任意可用语言」兜底；年龄分级（`appInfos` → `ageRatingDeclarations`，注意是 App 级而非版本级）缺失的必填问题（如 Apple 新增的 `socialMedia`）提审前自动补安全默认值（否 / NONE，已有值不覆盖），避免 409 `ENTITY_STATE_INVALID`；若声明被 App 状态锁定（如已上架且无待处理版本）无法用 API 修改，发布会直接报错并提示去 ASC 网页「年龄分级」手动作答一次；复用 READY_FOR_REVIEW 提交单时报「与版本不属于同一 App」会自动换单重试一次（Apple 不允许删除异常提交单，避免其永久阻塞提审） |
 | 前提 | Key 角色需 App Manager；构建需处理完成（`processingState=VALID`） |
 | 状态映射 | `READY_FOR_SALE`→已上架；`READY_FOR_REVIEW`→待送审；`WAITING_FOR_REVIEW`→等待审核；`IN_REVIEW`→审核中；`PENDING_APPLE_RELEASE`/`PENDING_DEVELOPER_RELEASE`/`PROCESSING_FOR_APP_STORE`→待发布；`PREPARE_FOR_SUBMISSION`→草稿；`REJECTED`/`DEVELOPER_REJECTED`→已拒绝 |
 | 立即发布 | ✅ 状态为 `PENDING_DEVELOPER_RELEASE` 时状态卡出现「立即发布」按钮，调用 `POST /v1/appStoreVersionReleaseRequests` 立即上架；`PENDING_APPLE_RELEASE` 由苹果自动发布，无按钮 |

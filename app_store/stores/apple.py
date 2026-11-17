@@ -717,7 +717,7 @@ class AppleAdapter(StoreAdapter):
 
         # 4) 补齐年龄分级必填项（Apple 新增的分级问题如 socialMedia 缺值会导致提审 409）
         if step_cb: step_cb("检查年龄分级（Age Rating）…")
-        self._ensure_age_rating(version_id, step_cb)
+        self._ensure_age_rating(apple_app_id, step_cb)
 
         # 5) 提交审核
         if step_cb: step_cb("创建审核提交…")
@@ -734,43 +734,79 @@ class AppleAdapter(StoreAdapter):
 
     # ---- ASC API 辅助方法 ----
 
-    # 年龄分级声明里所有布尔型分级问题：缺失（None）的一律补 False。
-    # Apple 会不定期新增必填问题（如 2026 年新增的 socialMedia），老 App 新建
-    # 版本时这些字段为空，提审时报 409 ENTITY_STATE_INVALID + REQUIRED
+    # 年龄分级声明（ageRatingDeclarations）字段清单，按 2026-11 实测的 ASC API 返回结构：
+    # 布尔型问题缺失（None）补 False；枚举型问题缺失补 "NONE"（NONE/INFREQUENT/FREQUENT）。
+    # Apple 会不定期新增必填问题（如 2026 年新增的 socialMedia / socialMediaAgeRestricted），
+    # 老 App 的声明里这些字段为空，提审时报 409 ENTITY_STATE_INVALID + REQUIRED
     _AGE_RATING_BOOL_FIELDS = (
-        "socialMedia", "gambling", "gamblingReal", "gamblingSimulated",
-        "contests", "alcohol", "sexualContent", "realitySports",
+        "socialMedia", "socialMediaAgeRestricted", "advertising", "gambling",
+        "healthOrWellnessTopics", "lootBox", "messagingAndChat", "parentalControls",
+        "ageAssurance", "unrestrictedWebAccess", "userGeneratedContent",
+    )
+    _AGE_RATING_ENUM_FIELDS = (
+        "alcoholTobaccoOrDrugUseOrReferences", "contests", "gamblingSimulated",
+        "gunsOrOtherWeapons", "medicalOrTreatmentInformation", "profanityOrCrudeHumor",
+        "sexualContentGraphicAndNudity", "sexualContentOrNudity", "horrorOrFearThemes",
+        "matureOrSuggestiveThemes", "violenceCartoonOrFantasy",
+        "violenceRealisticProlongedGraphicOrSadistic", "violenceRealistic",
     )
 
-    def _ensure_age_rating(self, version_id: str, step_cb=None) -> None:
-        """提审前检查版本的年龄分级声明，补齐缺失的必填布尔项。
+    def _ensure_age_rating(self, apple_app_id: str, step_cb=None) -> None:
+        """提审前检查 App 的年龄分级声明，补齐缺失的必填问题。
 
-        GET /appStoreVersions/{id}/ageRatingDeclaration 读取当前声明，
-        对值为 None 的分级问题统一 PATCH False（智能家居等无此类内容的
-        App 全 False 即 4+ 分级；有特殊内容的 App 应在 ASC 网页上配置，
-        已有值不会被覆盖）。读取失败时静默跳过，交给提审报错兜底。
+        注意年龄分级是 App 级信息（挂在 appInfos 下，而非 appStoreVersions）：
+        - 声明 id 与 appInfo id 相同；声明资源禁止直接 GET 实例，
+          只能通过 GET /appInfos/{id}/ageRatingDeclaration 关系端点读取
+        - 值为 None 的问题统一补安全默认值（False / "NONE"，即 4+ 分级），
+          已有值不覆盖；有特殊内容的 App 应在 ASC 网页上配置
+        - 声明只有对应 appInfo 可编辑时才能 PATCH；App 无待处理版本、
+          声明锁定（如已上架状态）时无法通过 API 修改，此时抛出明确
+          指引让用户去 ASC 网页作答，避免提审时才报 409
         """
-        try:
-            resp = self._asc_request(
-                "GET", f"/appStoreVersions/{version_id}/ageRatingDeclaration")
-        except StoreError as e:
-            if step_cb: step_cb(f"年龄分级读取失败（跳过，提审时如有问题会再报）: {e}")
+        infos = self._asc_request("GET", f"/apps/{apple_app_id}/appInfos?limit=20")
+        rows = infos.get("data") or []
+        if not rows:
+            if step_cb: step_cb("未找到 App 信息（跳过年龄分级检查）")
             return
+        # 取第一个 appInfo（App 只有一个 App 信息；声明 id 与其相同）
+        info_id = rows[0].get("id") or ""
+        if not info_id:
+            if step_cb: step_cb("App 信息缺少 id（跳过年龄分级检查）")
+            return
+        resp = self._asc_request("GET", f"/appInfos/{info_id}/ageRatingDeclaration")
         decl = (resp or {}).get("data") or {}
         decl_id = decl.get("id") or ""
         attrs = decl.get("attributes") or {}
         if not decl_id:
             if step_cb: step_cb("未找到年龄分级声明（跳过）")
             return
-        missing = {f: False for f in self._AGE_RATING_BOOL_FIELDS if attrs.get(f) is None}
+        missing: Dict[str, Any] = {}
+        for f in self._AGE_RATING_BOOL_FIELDS:
+            if attrs.get(f) is None:
+                missing[f] = False
+        for f in self._AGE_RATING_ENUM_FIELDS:
+            if attrs.get(f) is None:
+                missing[f] = "NONE"
         if not missing:
             if step_cb: step_cb("年龄分级已完整，无需修改")
             return
+        fields_txt = "、".join(missing)
         body = {"data": {"type": "ageRatingDeclarations", "id": decl_id,
                          "attributes": missing}}
-        self._asc_request("PATCH", f"/ageRatingDeclarations/{decl_id}", body=body)
+        try:
+            self._asc_request("PATCH", f"/ageRatingDeclarations/{decl_id}", body=body)
+        except StoreError as e:
+            if "not editable" in str(e) or "HTTP 409" in str(e):
+                # 声明被 App 状态锁定（如已上架、无待处理版本），API 无法修改：
+                # 必须去 ASC 网页手动作答一次，之后的新版本会继承完整答案
+                raise StoreError(
+                    f"年龄分级声明缺少必填项（{fields_txt}）且当前 App 状态下不可通过 API 修改。"
+                    "请到 App Store Connect 网页打开该 App → 版本页 → 「年龄分级」，"
+                    "把新增的分级问题（如社交媒体）作答并保存，然后重新发布即可。"
+                ) from e
+            raise
         if step_cb:
-            step_cb(f"年龄分级已补齐 {len(missing)} 项：{', '.join(missing)} = 否")
+            step_cb(f"年龄分级已补齐 {len(missing)} 项：{fields_txt}")
 
     def _find_build(self, apple_app_id: str, version_str: str) -> Optional[str]:
         """按版本号查找匹配的构建。
@@ -1056,13 +1092,43 @@ class AppleAdapter(StoreAdapter):
             try:
                 self._asc_request("POST", "/reviewSubmissionItems", body=item_body)
             except Exception as e:
-                # 仅清理本次新建的空提交单，复用旧单时不能删（里面可能有已有项目）
-                if newly_created:
+                # 复用的旧提交单可能归属异常（历史误建的单挂不到版本所属 App，
+                # 且 Apple 不允许 DELETE，会一直留在 READY_FOR_REVIEW 列表里）：
+                # 报「不同 App」时放弃复用，新建提交单重试一次
+                if not newly_created and "do not belong to the same app" in str(e):
+                    sub_body = {
+                        "data": {
+                            "type": "reviewSubmissions",
+                            "attributes": {"platform": "IOS"},
+                            "relationships": {
+                                "app": {"data": {"type": "apps", "id": apple_app_id}},
+                            },
+                        }
+                    }
+                    sub_resp = self._asc_request("POST", "/reviewSubmissions", body=sub_body)
+                    sub_id = sub_resp.get("data", {}).get("id", "")
+                    if not sub_id:
+                        raise StoreError("Apple 审核提交创建失败（换单重试）")
+                    newly_created = True
+                    time.sleep(0.3)
+                    item_body["data"]["relationships"]["reviewSubmission"] = {
+                        "data": {"type": "reviewSubmissions", "id": sub_id}}
                     try:
-                        self._asc_request("DELETE", f"/reviewSubmissions/{sub_id}")
-                    except Exception as de:
-                        print(f"Apple 清理 reviewSubmission {sub_id} 失败: {de}", file=sys.stderr)
-                raise StoreError(f"Apple 添加审核项目失败: {e}")
+                        self._asc_request("POST", "/reviewSubmissionItems", body=item_body)
+                    except Exception as e2:
+                        try:
+                            self._asc_request("DELETE", f"/reviewSubmissions/{sub_id}")
+                        except Exception as de:
+                            print(f"Apple 清理 reviewSubmission {sub_id} 失败: {de}", file=sys.stderr)
+                        raise StoreError(f"Apple 添加审核项目失败: {e2}")
+                else:
+                    # 仅清理本次新建的空提交单，复用旧单时不能删（里面可能有已有项目）
+                    if newly_created:
+                        try:
+                            self._asc_request("DELETE", f"/reviewSubmissions/{sub_id}")
+                        except Exception as de:
+                            print(f"Apple 清理 reviewSubmission {sub_id} 失败: {de}", file=sys.stderr)
+                    raise StoreError(f"Apple 添加审核项目失败: {e}")
 
         # 正式提交审核
         self._asc_request(
