@@ -720,17 +720,23 @@ def _publish_worker(tid: str):
         # 供飞书通知标题、电子表格与前端历史展示。只发鸿蒙/苹果时不再显示残留的安卓 version_name。
         # 安卓段以「是否携带了安卓安装包」为准：只发鸿蒙的华为任务没有 APK/AAB，不能显示安卓版本号
         _segs: List[str] = []
+        _parts: Dict[str, str] = {}
         if (apk_p or aab_p) and release.version_name:
-            _segs.append(str(release.version_name))
+            _segs.append(f"Android {release.version_name}")
+            _parts["android"] = str(release.version_name)
         _hv = params.get("harmony_version")
         _hv_name = str(_hv.get("version_name") or "") if isinstance(_hv, dict) else ""
         if _hv_name and "huawei" in targets:
             _segs.append(f"鸿蒙 {_hv_name}")
+            _parts["harmony"] = _hv_name
         _ab = params.get("apple_build")
         _ab_name = str(_ab.get("version_name") or "") if isinstance(_ab, dict) else ""
         if _ab_name and "apple" in targets:
             _segs.append(f"iOS {_ab_name}")
-        _update(tid, version_label=" + ".join(_segs))
+            _parts["ios"] = _ab_name
+        # version_parts 结构化存各端版本（android/harmony/ios），飞书电子表格
+        # 「版本」列用它按提审成功的平台组合出「Android：x，iOS：x，Harmony：x」
+        _update(tid, version_label=" + ".join(_segs), version_parts=_parts)
         _update(tid, progress=8, stage="读取配置")
         # 并行发布：每个平台一个线程同时执行各自的发布流程，互不阻塞
         with _task_lock:

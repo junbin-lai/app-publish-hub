@@ -1198,6 +1198,30 @@ def _status_word(task: Dict[str, Any]) -> str:
             "failed": "失败", "draft_only": "仅存草稿"}.get(scen, str(task.get("status") or ""))
 
 
+_ANDROID_KEYS = {"huawei", "oppo", "vivo", "xiaomi", "honor", "google", "qq"}
+
+
+def _sheet_platform_versions(task: Dict[str, Any]) -> str:
+    """电子表格「版本」列：按提审成功的平台组合各端版本号。
+
+    格式与 version_label 一致（Android 6.22.0 + 鸿蒙 2.2.1 + iOS 6.21.0），
+    只写 results 中存在成功记录的平台段（提审成功的才写）；
+    旧记录（无 version_parts）或全部失败时返回空，回落 version_label。
+    """
+    parts = task.get("version_parts") or {}
+    if not isinstance(parts, dict) or not parts:
+        return ""
+    ok_keys = {r.get("platform") for r in (task.get("results") or []) if r.get("ok")}
+    segs = []
+    if parts.get("android") and (ok_keys & _ANDROID_KEYS):
+        segs.append(f"Android {parts['android']}")
+    if parts.get("harmony") and "huawei" in ok_keys:
+        segs.append(f"鸿蒙 {parts['harmony']}")
+    if parts.get("ios") and "apple" in ok_keys:
+        segs.append(f"iOS {parts['ios']}")
+    return " + ".join(segs)
+
+
 def _publish_values(task: Dict[str, Any], app_name: str) -> Dict[str, str]:
     results = task.get("results") or []
     errors = task.get("errors") or []
@@ -1206,7 +1230,8 @@ def _publish_values(task: Dict[str, Any], app_name: str) -> Dict[str, str]:
     bad = list(errors)
     bad += [{"platform": r.get("platform"), "message": r.get("message") or "未成功"}
             for r in results if not r.get("ok")]
-    vname = str(task.get("version_label") or task.get("version_name") or "")
+    vname = _sheet_platform_versions(task) or str(
+        task.get("version_label") or task.get("version_name") or "")
     vcode = task.get("version_code")
     # 版本号括号里带 code：仅当标签就是纯安卓版本（历史旧行为）；
     # 组合标签（含鸿蒙/iOS）时不再拼 version_code，避免只发鸿蒙却显示残留的安卓 code
