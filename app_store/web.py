@@ -1275,7 +1275,8 @@ def _notify_feishu_publish(tid: str) -> None:
         t = _TASKS.get(tid) or {}
         snapshot = {
             "app_id": t.get("app_id"), "platform": t.get("platform"),
-            "version_name": t.get("version_name"), "status": t.get("status"),
+            "version_name": t.get("version_name"), "version_label": t.get("version_label"),
+            "status": t.get("status"),
             "stage": t.get("stage"), "results": list(t.get("results") or []),
             "errors": list(t.get("errors") or []), "dry_run": t.get("dry_run"),
             "user": t.get("user"), "finished_at": t.get("finished_at"),
@@ -1311,7 +1312,8 @@ def _sheet_record(tid: str) -> None:
         t = _TASKS.get(tid) or {}
         snapshot = {
             "app_id": t.get("app_id"), "platform": t.get("platform"),
-            "version_name": t.get("version_name"), "version_code": t.get("version_code"),
+            "version_name": t.get("version_name"), "version_label": t.get("version_label"),
+            "version_parts": dict(t.get("version_parts") or {}), "version_code": t.get("version_code"),
             "status": t.get("status"), "results": list(t.get("results") or []),
             "errors": list(t.get("errors") or []), "dry_run": t.get("dry_run"),
             "user": t.get("user"), "finished_at": t.get("finished_at"),
